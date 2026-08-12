@@ -51,6 +51,7 @@ openroutine install             # or register it as a boot service, no sudo
 
 `init` writes `~/.config/openroutine/config.toml`, registers the directory you
 name, and leaves a sample `hello.cron.md` beside it. Nothing else to configure.
+[Deploy](#deploy) covers leaving it running on a machine you don't sit at.
 
 ## Using it
 
@@ -81,6 +82,99 @@ curl -X POST http://127.0.0.1:7373/v1/tasks/myrepo/todo-digest/fire \
 The optional `text` reaches the agent labelled as caller-supplied context, not
 as instructions — anyone who can reach the endpoint can send text, so text must
 not be able to redefine the task.
+
+## Deploy
+
+Everything above drives the daemon by hand. To leave it running unattended on
+a machine you don't sit at — the Mac mini under the desk, a home server —
+register it with the system's service manager:
+
+```bash
+cargo install --path .        # install to a stable path; see below
+openroutine init ~/tasks      # config, and a sample task to prove it works
+openroutine install           # register with launchd/systemd, no sudo
+openroutine status            # daemon: running (pid …)
+```
+
+`install` records the path of the binary that registers it, so run it from the
+installed copy rather than from `target/release/openroutine` — a `cargo clean`
+should not be able to unmake your scheduler. It writes a per-user service and
+never asks for sudo. `openroutine install --print` shows exactly what it would
+write, and what it would run, without writing anything.
+
+### Your agent must be on the login shell's PATH
+
+The daemon runs every agent through a *login* shell, so a run gets the same
+`PATH`, shims, and API keys your terminal has. A login shell is not an
+interactive one: zsh reads `.zshenv` and `.zprofile` but **not** `.zshrc`, and
+bash reads `.bash_profile` but not `.bashrc`. So an agent that only your
+`.zshrc` puts on the `PATH` — anything in `~/.local/bin` is the usual case —
+is found when you test by hand and missing once launchd starts the daemon:
+
+```
+zsh:1: command not found: claude
+```
+
+Fix it by moving the `PATH` export into `.zprofile`, which repairs SSH and
+cron sessions at the same time, or by naming the agent absolutely:
+
+```toml
+[agents.claude]
+cmd = "/Users/you/.local/bin/claude -p {prompt}"
+```
+
+Verify the way the daemon will see it — a login shell with none of your
+terminal's inherited environment:
+
+```bash
+env -i HOME="$HOME" SHELL=/bin/zsh PATH=/usr/bin:/bin /bin/zsh -lc 'command -v claude'
+```
+
+### macOS
+
+`install` writes a **LaunchAgent** to `~/Library/LaunchAgents/`, so the daemon
+starts at *login* rather than at boot, and launchd restarts it if it dies. On
+a headless machine, pair it with auto-login (System Settings → Users & Groups
+→ Automatically log in as), which requires FileVault to be off.
+
+Auto-login is not only about the daemon starting. Agent CLIs keep credentials
+in your **login keychain**, and that keychain is unlocked by the GUI login — a
+service that starts without one finds it locked, and the agent reports itself
+logged out. That is also why `install` does not write a root LaunchDaemon:
+starting before anyone logs in is precisely the state in which the agent
+cannot authenticate, so the one thing a LaunchDaemon buys is the one thing
+that breaks it. The trade runs the other way too, and it is a real one:
+auto-login with FileVault off means physical access is a logged-in desktop.
+
+While you are there, stop the machine sleeping through its own schedules:
+
+```bash
+sudo pmset -c sleep 0 displaysleep 0 disksleep 0  # never sleep
+sudo pmset -c autorestart 1 womp 1                # return after power loss
+launchctl print gui/$(id -u)/dev.openroutine.daemon | grep state
+```
+
+### Linux
+
+`install` writes a systemd user unit and enables lingering, so the daemon
+starts at boot with no login session — the one platform where "no login
+needed" holds without an asterisk.
+
+```bash
+systemctl --user status dev.openroutine.daemon
+journalctl --user -u dev.openroutine.daemon -f
+```
+
+### Confirming it survives
+
+```bash
+openroutine run <task>   # a real run, end to end
+openroutine logs <task>  # what the agent actually printed
+```
+
+Killing the daemon outright is a fair test: the service manager should bring
+it back within seconds under a new pid. `openroutine uninstall` unregisters
+it and leaves your config, state, and tasks untouched.
 
 ## Status
 
