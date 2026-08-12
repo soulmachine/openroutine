@@ -163,13 +163,16 @@ pre .k { color: var(--accent); }
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-family: var(--mono);
-  font-size: 0.95rem;
+  /* Sans, not mono: the wordmark is mixed-case, and it matches the product
+   * UI's own <h1>OpenRoutine</h1>. Lowercase things — the domain, paths, the
+   * CLI — stay in var(--mono) wherever they appear. */
+  font-family: var(--sans);
+  font-size: 1.05rem;
   font-weight: 600;
   color: var(--ink);
   text-decoration: none;
   margin-right: auto;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
 }
 
 .wordmark svg { display: block; width: 1.15rem; height: 1.15rem; }
