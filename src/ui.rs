@@ -69,6 +69,7 @@ async fn asset(axum::extract::Path(path): axum::extract::Path<String>) -> Respon
         Some("js") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
         _ => "application/octet-stream",
     };
     serve(Assets::get(&path), kind)
