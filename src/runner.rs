@@ -259,3 +259,54 @@ fn split_tokens(template: &str) -> Result<Vec<String>> {
     }
     Ok(tokens)
 }
+
+/// The `PATH` a Run will actually see.
+///
+/// Runs launch through a login shell, so the Daemon's own `PATH` is the
+/// wrong thing to check against — under a service manager it is nearly
+/// empty, which is the very problem the login shell solves. This asks the
+/// shell once and remembers the answer.
+fn login_path() -> Option<&'static str> {
+    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let shell = std::env::var("SHELL")
+            .ok()
+            .filter(|shell| !shell.is_empty())
+            .unwrap_or_else(|| FALLBACK_SHELL.to_string());
+        let output = std::process::Command::new(shell)
+            .args(["-l", "-c", "printf %s \"$PATH\""])
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|path| !path.is_empty())
+    })
+    .as_deref()
+}
+
+/// Whether the Agent's program can be found the way a Run would find it.
+///
+/// Advisory only: a profile may put something on `PATH` conditionally, so
+/// not finding it now is a reason to warn, never a reason to refuse.
+pub fn program_is_findable(program: &str) -> bool {
+    let candidate = std::path::Path::new(program);
+    if candidate.is_absolute() || program.contains('/') {
+        return is_executable(candidate);
+    }
+
+    let Some(path) = login_path() else {
+        // Nothing to check against; say nothing rather than warn wrongly.
+        return true;
+    };
+    path.split(':')
+        .filter(|entry| !entry.is_empty())
+        .any(|entry| is_executable(&std::path::Path::new(entry).join(program)))
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}

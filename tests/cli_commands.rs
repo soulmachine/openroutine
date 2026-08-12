@@ -292,3 +292,60 @@ fn install_print_writes_nothing_at_all() {
 
     assert!(!agents.exists(), "printing is not installing");
 }
+
+#[test]
+fn init_points_at_the_daemon_too() {
+    let env = TestEnv::new();
+
+    let out = env.run_ok(&["init", env.project_dir().to_str().unwrap()]);
+
+    assert!(
+        out.contains("serve"),
+        "the next thing a new user wants is a running daemon; init should say so:\n{out}"
+    );
+}
+
+#[test]
+fn an_agent_whose_program_is_missing_warns_without_breaking_the_task() {
+    let env = TestEnv::new();
+    env.write_task("nightly", NIGHTLY);
+    env.write_config_with_agent("/definitely/not/here --run {prompt}");
+
+    let out = env.run_ok(&["list"]);
+
+    assert!(
+        !out.to_lowercase().contains("broken"),
+        "the program might still resolve at run time; this is a warning, not a fault:\n{out}"
+    );
+    assert!(out.to_lowercase().contains("warning"), "{out}");
+    assert!(
+        out.contains("/definitely/not/here"),
+        "and it should name what it could not find:\n{out}"
+    );
+}
+
+#[test]
+fn an_agent_named_by_a_command_that_is_not_installed_warns() {
+    let env = TestEnv::new();
+    env.write_task("nightly", NIGHTLY);
+    env.write_config_with_agent("definitely-not-a-real-command-xyz --run {prompt}");
+
+    let out = env.run_ok(&["list"]);
+
+    assert!(out.to_lowercase().contains("warning"), "{out}");
+    assert!(out.contains("definitely-not-a-real-command-xyz"), "{out}");
+}
+
+#[test]
+fn an_agent_that_is_installed_says_nothing() {
+    let env = TestEnv::new();
+    env.write_task("nightly", NIGHTLY);
+    env.write_config(); // the stub agent, an absolute path that exists
+
+    let out = env.run_ok(&["list"]);
+
+    assert!(
+        !out.to_lowercase().contains("cannot find"),
+        "no complaint about an agent that is right there:\n{out}"
+    );
+}

@@ -234,6 +234,31 @@ fn assess(path: &Path, project_dir: &Path, config: &Config) -> (String, TaskHeal
             return broken(error);
         }
 
+        // An Agent whose program cannot be found will fail at fire time, in
+        // the dark. Warned rather than Broken: a login profile may put it on
+        // PATH conditionally, and refusing to schedule would be too strong.
+        if let Ok(command) = crate::runner::build_command(&template.cmd, &Default::default())
+            && !crate::runner::program_is_findable(&command.program)
+        {
+            // An absolute path either exists or it does not; a bare name is
+            // looked up on PATH. Saying the wrong one sends people the wrong
+            // way when they go to fix it.
+            let program = &command.program;
+            definition
+                .warnings
+                .push(match (program.contains('/'), *program == agent) {
+                    (true, _) => format!(
+                        "agent {agent:?} runs {program:?}, which is not there or is not executable"
+                    ),
+                    (false, true) => format!(
+                        "{agent:?} is not on your login shell's PATH, so its Runs will fail"
+                    ),
+                    (false, false) => format!(
+                        "agent {agent:?} runs {program:?}, which is not on your login shell's PATH"
+                    ),
+                });
+        }
+
         // A parameter the template has nowhere to put is not fatal — the Run
         // still works — but it silently does nothing, so say so.
         let placeholders = crate::runner::template_placeholders(&template.cmd);

@@ -355,8 +355,11 @@ fn init(config_path: &std::path::Path, dir: &std::path::Path) -> Result<()> {
 
     println!("Wrote config {}", config_path.display());
     println!("Wrote sample task {}", sample.display());
-    println!("\nTry:  openroutine list");
-    println!("      openroutine run hello --dry-run");
+    println!("\nTry:  openroutine list                  # what would run");
+    println!("      openroutine run hello --dry-run   # what it would do");
+    println!("      openroutine serve                 # start the scheduler");
+    println!("\nNothing fires until a daemon is running. `openroutine install`");
+    println!("registers one with your service manager, without sudo.");
     Ok(())
 }
 
