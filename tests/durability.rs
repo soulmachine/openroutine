@@ -4,10 +4,10 @@ mod support;
 
 use openroutine::clock::ManualClock;
 use openroutine::daemon::Daemon;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use support::{TestEnv, at};
+use support::{DaemonProcess, TestEnv, at};
 
 const BIN: &str = env!("CARGO_BIN_EXE_openroutine");
 
@@ -25,24 +25,6 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
-fn spawn_daemon(env: &TestEnv) -> std::process::Child {
-    Command::new(BIN)
-        .args(["serve", "--config"])
-        .arg(env.config_path())
-        .env("XDG_STATE_HOME", env.xdg_state_home())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap()
-}
-
-fn stop(child: &mut std::process::Child) {
-    unsafe {
-        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
-    }
-    let _ = child.wait();
-}
-
 // --- One daemon at a time -----------------------------------------------
 
 #[test]
@@ -51,7 +33,7 @@ fn a_second_daemon_refuses_to_start_and_says_where_the_first_is() {
     env.write_task("hourly", HOURLY);
     env.write_config();
 
-    let mut first = spawn_daemon(&env);
+    let mut first = DaemonProcess::spawn(&env);
     wait_until("the first daemon to take the lock", || {
         env.state_file().exists()
     });
@@ -63,7 +45,7 @@ fn a_second_daemon_refuses_to_start_and_says_where_the_first_is() {
         .output()
         .unwrap();
 
-    stop(&mut first);
+    first.stop();
 
     assert!(
         !second.status.success(),
@@ -86,13 +68,13 @@ fn the_lock_is_released_when_the_daemon_stops() {
     env.write_task("hourly", HOURLY);
     env.write_config();
 
-    let mut first = spawn_daemon(&env);
+    let mut first = DaemonProcess::spawn(&env);
     wait_until("the first daemon", || env.state_file().exists());
-    stop(&mut first);
+    first.stop();
 
-    let mut second = spawn_daemon(&env);
-    let started = second.try_wait().unwrap();
-    stop(&mut second);
+    let mut second = DaemonProcess::spawn(&env);
+    let started = second.try_wait();
+    second.stop();
 
     assert!(
         started.is_none(),
@@ -147,12 +129,9 @@ fn killing_the_daemon_never_leaves_an_unreadable_state_file() {
 
     // Kill it repeatedly at whatever moment it happens to be in.
     for _ in 0..6 {
-        let mut child = spawn_daemon(&env);
+        let mut child = DaemonProcess::spawn(&env);
         wait_until("the daemon to write state", || env.state_file().exists());
-        unsafe {
-            libc::kill(child.id() as libc::pid_t, libc::SIGKILL);
-        }
-        let _ = child.wait();
+        child.kill();
 
         let raw = std::fs::read_to_string(env.state_file()).unwrap();
         serde_json::from_str::<serde_json::Value>(&raw)
@@ -251,11 +230,11 @@ fn the_daemon_keeps_its_own_log_beside_its_state() {
     env.write_task("hourly", HOURLY);
     env.write_config();
 
-    let mut child = spawn_daemon(&env);
+    let mut child = DaemonProcess::spawn(&env);
     wait_until("the daemon log", || {
         env.state_dir().join("daemon.log").exists()
     });
-    stop(&mut child);
+    child.stop();
 
     let log = std::fs::read_to_string(env.state_dir().join("daemon.log")).unwrap();
     assert!(

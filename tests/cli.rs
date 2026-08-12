@@ -3,9 +3,9 @@
 
 mod support;
 
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
-use support::TestEnv;
+use support::{DaemonProcess, TestEnv};
 
 const BIN: &str = env!("CARGO_BIN_EXE_openroutine");
 
@@ -37,26 +37,6 @@ fn wait_up_to(budget: Duration, what: &str, mut ready: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(20));
     }
     panic!("timed out waiting for {what}");
-}
-
-fn terminate(child: &mut Child) {
-    unsafe {
-        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
-    }
-}
-
-/// Reaps the daemon, failing rather than hanging if it ignores the signal.
-fn wait_for_exit(child: &mut Child) -> ExitStatus {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if let Some(status) = child.try_wait().unwrap() {
-            return status;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    panic!("daemon did not exit after SIGTERM");
 }
 
 #[test]
@@ -96,14 +76,7 @@ fn serving_discovers_tasks_writes_state_and_stops_cleanly_on_sigterm() {
     let task_path = env.write_task("todo-digest", NIGHTLY);
     env.write_config();
 
-    let mut child = Command::new(BIN)
-        .args(["serve", "--config"])
-        .arg(env.config_path())
-        .env("XDG_STATE_HOME", env.xdg_state_home())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut daemon = DaemonProcess::spawn(&env);
 
     wait_until("the daemon to write its state file", || {
         env.state_file().exists()
@@ -119,8 +92,7 @@ fn serving_discovers_tasks_writes_state_and_stops_cleanly_on_sigterm() {
 
     // Supervised processes are stopped by signal; exiting cleanly is the
     // contract with launchd and systemd.
-    terminate(&mut child);
-    let status = wait_for_exit(&mut child);
+    let status = daemon.stop();
     assert!(
         status.success(),
         "SIGTERM should be a clean shutdown, got {status:?}"
@@ -133,20 +105,12 @@ fn nothing_is_written_outside_the_sandbox() {
     env.write_task("todo-digest", NIGHTLY);
     env.write_config();
 
-    let mut child = Command::new(BIN)
-        .args(["serve", "--config"])
-        .arg(env.config_path())
-        .env("XDG_STATE_HOME", env.xdg_state_home())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut daemon = DaemonProcess::spawn(&env);
 
     wait_until("the daemon to write its state file", || {
         env.state_file().exists()
     });
-    terminate(&mut child);
-    wait_for_exit(&mut child);
+    daemon.stop();
 
     // Everything the daemon created lives under the temp root: the state dir
     // it was told to use, and — inside the Project — only the CRONTAB.md it
@@ -178,16 +142,14 @@ fn a_relative_xdg_state_home_falls_back_to_home() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&cwd).unwrap();
 
-    let mut child = Command::new(BIN)
-        .args(["serve", "--config"])
-        .arg(env.config_path())
-        .env("XDG_STATE_HOME", "relative-state")
-        .env("HOME", &home)
-        .current_dir(&cwd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut daemon = DaemonProcess::spawn_with(
+        Command::new(BIN)
+            .args(["serve", "--config"])
+            .arg(env.config_path())
+            .env("XDG_STATE_HOME", "relative-state")
+            .env("HOME", &home)
+            .current_dir(&cwd),
+    );
 
     let fallback = home
         .join(".local")
@@ -198,8 +160,7 @@ fn a_relative_xdg_state_home_falls_back_to_home() {
         fallback.exists()
     });
 
-    terminate(&mut child);
-    wait_for_exit(&mut child);
+    daemon.stop();
 
     assert!(
         !cwd.join("relative-state").exists(),
@@ -212,14 +173,7 @@ fn a_task_added_while_serving_is_picked_up_without_a_restart() {
     let env = TestEnv::new();
     env.write_config();
 
-    let mut child = Command::new(BIN)
-        .args(["serve", "--config"])
-        .arg(env.config_path())
-        .env("XDG_STATE_HOME", env.xdg_state_home())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut daemon = DaemonProcess::spawn(&env);
 
     wait_until("the daemon to write its state file", || {
         env.state_file().exists()
@@ -243,6 +197,5 @@ fn a_task_added_while_serving_is_picked_up_without_a_restart() {
         },
     );
 
-    terminate(&mut child);
-    assert!(wait_for_exit(&mut child).success());
+    assert!(daemon.stop().success());
 }

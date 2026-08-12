@@ -11,6 +11,8 @@
 use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 pub fn at(iso: &str) -> DateTime<Utc> {
@@ -457,6 +459,103 @@ done
     pub fn read_run_log(&self, task_id: &str, index: usize) -> String {
         let dir = &self.run_dirs(task_id)[index];
         fs::read_to_string(dir.join("output.log")).expect("output.log should exist")
+    }
+}
+
+/// A Daemon running as a real process, reaped when it goes out of scope.
+///
+/// `std::process::Child` deliberately does not kill on drop, so a test that
+/// panicked between spawning a Daemon and stopping it left one running: it
+/// outlives the test binary, holds the lock on its state directory, and is
+/// invisible until somebody goes looking. A panic between those two points
+/// is precisely what a failing assertion does — so the leak appeared only
+/// when the suite was red, which is exactly when a stray Daemon writing
+/// state is least welcome and least likely to be noticed.
+///
+/// Reaping is therefore unconditional. An explicit stop still hands back
+/// what a test needs to assert on; everything else is caught on the way out.
+pub struct DaemonProcess {
+    child: Child,
+    /// Whether the child has been waited on. Signalling a reaped pid could
+    /// reach whatever the operating system has since reused the number for,
+    /// so this is tracked rather than risked.
+    reaped: bool,
+}
+
+impl DaemonProcess {
+    /// Spawns `serve` against this sandbox — its config, and its state dir.
+    pub fn spawn(env: &TestEnv) -> Self {
+        Self::spawn_with(
+            Command::new(env!("CARGO_BIN_EXE_openroutine"))
+                .args(["serve", "--config"])
+                .arg(env.config_path())
+                .env("XDG_STATE_HOME", env.xdg_state_home()),
+        )
+    }
+
+    /// Spawns an already-configured command, for the tests that need an
+    /// environment of their own. Output is discarded either way: a daemon
+    /// logging into a pipe nobody drains would eventually block on it.
+    pub fn spawn_with(command: &mut Command) -> Self {
+        let child = command
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("daemon should spawn");
+        Self {
+            child,
+            reaped: false,
+        }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Whether it has exited already, without waiting on it.
+    pub fn try_wait(&mut self) -> Option<ExitStatus> {
+        self.child.try_wait().unwrap()
+    }
+
+    /// Stops it the way a service manager does, and reaps it. Fails rather
+    /// than hanging if the signal is ignored.
+    pub fn stop(&mut self) -> ExitStatus {
+        self.signal(libc::SIGTERM);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Some(status) = self.try_wait() {
+                self.reaped = true;
+                return status;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.reaped = true;
+        panic!("daemon did not exit after SIGTERM");
+    }
+
+    /// Kills it outright, as a crash would, and reaps it.
+    pub fn kill(&mut self) {
+        self.signal(libc::SIGKILL);
+        let _ = self.child.wait();
+        self.reaped = true;
+    }
+
+    fn signal(&self, signal: libc::c_int) {
+        unsafe {
+            libc::kill(self.child.id() as libc::pid_t, signal);
+        }
+    }
+}
+
+impl Drop for DaemonProcess {
+    fn drop(&mut self) {
+        if self.reaped {
+            return;
+        }
+        self.signal(libc::SIGTERM);
+        let _ = self.child.wait();
     }
 }
 

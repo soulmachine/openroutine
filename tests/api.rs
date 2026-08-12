@@ -2,48 +2,33 @@
 
 mod support;
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
-use support::TestEnv;
-
-const BIN: &str = env!("CARGO_BIN_EXE_openroutine");
+use support::{DaemonProcess, TestEnv};
 
 const MANUAL: &str = "---\ndescription: On demand\nagent: stub\n---\n\nping\n";
 
 struct Served {
-    child: std::process::Child,
+    /// Held for its Drop: the daemon is reaped even if a test panics.
+    _daemon: DaemonProcess,
     base: String,
     token: String,
 }
 
-impl Drop for Served {
-    fn drop(&mut self) {
-        unsafe {
-            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
-        }
-        let _ = self.child.wait();
-    }
-}
-
-// The child is reaped by `Served`'s Drop; clippy cannot see across it.
-#[allow(clippy::zombie_processes)]
 fn serve(env: &TestEnv) -> Served {
     let port = env.write_config_with_api();
     let token = env.api_token();
-    let child = Command::new(BIN)
-        .args(["serve", "--config"])
-        .arg(env.config_path())
-        .env("XDG_STATE_HOME", env.xdg_state_home())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let _daemon = DaemonProcess::spawn(env);
 
     let base = format!("http://127.0.0.1:{port}");
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if curl(&["-s", "-o", "/dev/null", &format!("{base}/v1/tasks")]).is_some() {
-            return Served { child, base, token };
+            return Served {
+                _daemon,
+                base,
+                token,
+            };
         }
         std::thread::sleep(Duration::from_millis(20));
     }
