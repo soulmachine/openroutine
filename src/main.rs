@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use openroutine::clock::SystemClock;
+use openroutine::clock::{Clock, SystemClock};
 use openroutine::config::{self, Config};
 use openroutine::daemon::Daemon;
 use std::path::PathBuf;
@@ -31,6 +31,8 @@ struct Cli {
 enum Command {
     /// Run the scheduler in the foreground.
     Serve,
+    /// Show every Task, its schedule, and its health.
+    List,
 }
 
 #[tokio::main]
@@ -51,6 +53,22 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Serve => serve(&config_path).await,
+        Command::List => list(&config_path),
+    }
+}
+
+/// Reads Task files straight from disk — no Daemon required, and nothing
+/// written back.
+fn list(config_path: &std::path::Path) -> Result<()> {
+    let config = Config::load(config_path)?;
+    let tasks = openroutine::discovery::scan_all(&config);
+    let report = openroutine::list::render(&tasks, SystemClock.now(), &openroutine::zone::host());
+
+    // `openroutine list | head` closes the pipe early; that's the reader's
+    // choice, not an error worth a panic.
+    match std::io::Write::write_all(&mut std::io::stdout().lock(), report.as_bytes()) {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other.map_err(Into::into),
     }
 }
 
@@ -65,6 +83,7 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
     tracing::info!(
         state_dir = %daemon.state_dir().display(),
         tasks = daemon.task_count(),
+        broken = daemon.broken_count(),
         "openroutine serving"
     );
 

@@ -216,6 +216,183 @@ async fn a_failing_agent_is_recorded_as_failed_with_its_exit_code() {
 }
 
 #[tokio::test]
+async fn the_prompt_reaches_the_agent_with_its_shape_intact() {
+    let env = TestEnv::new();
+    env.write_task(
+        "shaped",
+        "---\ndescription: Multi-paragraph prompt\ncron: \"@hourly\"\nagent: stub\n---\n\nFirst para.\n\n  indented line\n\nLast.\n",
+    );
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(
+        env.invocations()[0].args,
+        vec!["--run", "First para.\n\n  indented line\n\nLast."],
+        "blank lines and indentation survive from file to Agent"
+    );
+}
+
+/// Writes a Task whose prompt body is `prompt`, firing hourly.
+fn hourly_task(env: &TestEnv, name: &str, prompt: &str) {
+    env.write_task(
+        name,
+        &format!("---\ndescription: {name}\ncron: \"@hourly\"\nagent: stub\n---\n\n{prompt}\n"),
+    );
+}
+
+/// Runs one hourly Task through a Tick and returns what the Agent received.
+async fn fire_once(env: &TestEnv) -> Vec<String> {
+    let (mut daemon, clock) = daemon_at(env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+    env.invocations()
+        .first()
+        .expect("the Agent should have run")
+        .args
+        .clone()
+}
+
+#[tokio::test]
+async fn a_prompt_full_of_shell_syntax_reaches_the_agent_inert() {
+    let env = TestEnv::new();
+    let marker = env.path().join("pwned");
+    let nasty = format!(
+        "; touch {} && echo $(whoami) `id` | tee {}",
+        marker.display(),
+        marker.display()
+    );
+    hourly_task(&env, "nasty", &nasty);
+    env.write_config();
+
+    let args = fire_once(&env).await;
+
+    assert_eq!(
+        args,
+        vec!["--run".to_string(), nasty.clone()],
+        "the whole prompt is one argument"
+    );
+    assert!(
+        !marker.exists(),
+        "no shell ever interpreted the prompt, so nothing it asked for happened"
+    );
+}
+
+#[tokio::test]
+async fn a_prompt_that_looks_like_a_flag_is_still_just_the_prompt() {
+    let env = TestEnv::new();
+    hourly_task(&env, "flaggy", "--dangerously-skip-permissions");
+    env.write_config();
+
+    let args = fire_once(&env).await;
+
+    assert_eq!(args, vec!["--run", "--dangerously-skip-permissions"]);
+}
+
+#[tokio::test]
+async fn a_placeholder_inside_a_flag_stays_one_argument() {
+    let env = TestEnv::new();
+    hourly_task(&env, "embedded", "hello");
+    env.write_config_with_agent(&format!(
+        "{} --prompt={{prompt}}",
+        env.stub_path().display()
+    ));
+
+    let args = fire_once(&env).await;
+
+    assert_eq!(args, vec!["--prompt=hello"]);
+}
+
+#[tokio::test]
+async fn a_quoted_program_path_with_spaces_is_one_token() {
+    let env = TestEnv::new();
+    hourly_task(&env, "spaced", "hello");
+    let spaced = env.write_stub_agent_named("stub agent.sh");
+    env.write_config_with_agent(&format!("\"{}\" --run {{prompt}}", spaced.display()));
+
+    let args = fire_once(&env).await;
+
+    assert_eq!(args, vec!["--run", "hello"]);
+}
+
+#[tokio::test]
+async fn a_broken_task_is_counted_but_never_fires() {
+    let env = TestEnv::new();
+    env.write_task(
+        "typo",
+        "---\ndescription: Typo'd schedule\ncron: \"0 25 * * *\"\nagent: stub\n---\n\nbody\n",
+    );
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T01:59:00Z").await;
+
+    // Every minute of the day it might plausibly have fired.
+    for minute in 0..60 {
+        clock.set(at(&format!("2026-08-11T02:{minute:02}:00Z")));
+        daemon.tick().await.unwrap();
+    }
+    daemon.wait_for_running().await;
+
+    assert!(
+        env.invocations().is_empty(),
+        "a Broken Task must never reach the Agent"
+    );
+}
+
+#[tokio::test]
+async fn fixing_a_broken_task_lets_it_fire_on_the_next_scan() {
+    let env = TestEnv::new();
+    env.write_task(
+        "hourly",
+        "---\ndescription: Broken for now\ncron: \"every hour please\"\nagent: stub\n---\n\nping\n",
+    );
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    assert!(env.invocations().is_empty(), "still broken, still silent");
+
+    env.write_task(
+        "hourly",
+        "---\ndescription: Fixed\ncron: \"@hourly\"\nagent: stub\n---\n\nping\n",
+    );
+    daemon.reload().await.unwrap();
+
+    clock.set(at("2026-08-11T02:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(
+        env.invocations().len(),
+        1,
+        "a repaired Task recovers without restarting the Daemon"
+    );
+}
+
+#[tokio::test]
+async fn a_task_with_an_unknown_key_still_fires() {
+    let env = TestEnv::new();
+    env.write_task(
+        "odd",
+        "---\ndescription: Key from the future\ncron: \"@hourly\"\nagent: stub\nretries: 3\n---\n\nping\n",
+    );
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(env.invocations().len(), 1);
+}
+
+#[tokio::test]
 async fn each_tick_produces_its_own_run() {
     let env = TestEnv::new();
     env.write_task(

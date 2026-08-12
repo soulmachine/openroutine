@@ -138,9 +138,22 @@ printf 'stub agent ran\n'
         self.write_config_with_agent(&format!("{} --run {{prompt}}", self.stub_path().display()))
     }
 
+    /// A config that names the stub as the Agent to use when a Task omits one.
+    pub fn write_config_with_default_agent(&self) -> PathBuf {
+        self.write_config_toml(
+            &format!("{} --run {{prompt}}", self.stub_path().display()),
+            "default_agent = \"stub\"\n",
+        )
+    }
+
     pub fn write_config_with_agent(&self, cmd: &str) -> PathBuf {
+        self.write_config_toml(cmd, "")
+    }
+
+    fn write_config_toml(&self, cmd: &str, preamble: &str) -> PathBuf {
         let config = format!(
-            "[[projects]]\n\
+            "{preamble}\
+             [[projects]]\n\
              path = {project:?}\n\
              name = \"proj\"\n\
              \n\
@@ -151,6 +164,16 @@ printf 'stub agent ran\n'
         );
         let path = self.config_path();
         fs::write(&path, config).unwrap();
+        path
+    }
+
+    /// Writes a second copy of the stub Agent at `name`, for cases that need
+    /// an executable path the template must quote.
+    pub fn write_stub_agent_named(&self, name: &str) -> PathBuf {
+        let source = fs::read_to_string(self.stub_path()).unwrap();
+        let path = self.root.path().join(name);
+        fs::write(&path, source).unwrap();
+        make_executable(&path);
         path
     }
 
@@ -198,6 +221,29 @@ printf 'stub agent ran\n'
                 }
             })
             .collect()
+    }
+
+    /// Runs the real binary against this sandbox and captures its output.
+    pub fn run(&self, args: &[&str]) -> std::process::Output {
+        std::process::Command::new(env!("CARGO_BIN_EXE_openroutine"))
+            .args(args)
+            .arg("--config")
+            .arg(self.config_path())
+            .env("XDG_STATE_HOME", self.xdg_state_home())
+            .output()
+            .expect("binary should run")
+    }
+
+    /// Runs the binary and returns its stdout, requiring success.
+    pub fn run_ok(&self, args: &[&str]) -> String {
+        let output = self.run(args);
+        assert!(
+            output.status.success(),
+            "`openroutine {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("stdout should be utf-8")
     }
 
     pub fn state_file(&self) -> PathBuf {

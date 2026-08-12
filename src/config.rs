@@ -20,6 +20,10 @@ pub struct Config {
     pub projects: Vec<ProjectConfig>,
     #[serde(default)]
     pub agents: BTreeMap<String, AgentConfig>,
+    /// The Agent for Tasks that name none. Unset by default, so an omitted
+    /// `agent:` is Broken until the user opts in.
+    #[serde(default)]
+    pub default_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +59,22 @@ impl Config {
 
     pub fn agent(&self, name: &str) -> Option<&AgentConfig> {
         self.agents.get(name)
+    }
+
+    /// Resolves the Agent a Task will run under: the one it names, else the
+    /// configured default. The error is what makes the Task Broken.
+    pub fn resolve_agent(&self, requested: Option<&str>) -> Result<String, String> {
+        let name = requested
+            .or(self.default_agent.as_deref())
+            .ok_or("no agent: the task names none and the config sets no `default_agent`")?;
+
+        if self.agents.contains_key(name) {
+            Ok(name.to_string())
+        } else {
+            Err(format!(
+                "unknown agent {name:?}: the config defines no agent by that name"
+            ))
+        }
     }
 }
 

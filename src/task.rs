@@ -4,6 +4,7 @@
 
 use crate::schedule::{Schedule, ScheduleError};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 const FENCE: &str = "---";
 
@@ -19,13 +20,33 @@ pub enum TaskError {
     Schedule(#[from] ScheduleError),
 }
 
+/// Frontmatter keys the v1 schema defines but this build does not act on
+/// yet. Warned about specifically: telling someone their `disabled: true` is
+/// an "unknown key" would be a lie, and saying nothing would be worse.
+const NOT_YET_HONOURED: &[&str] = &[
+    "at",
+    "catch_up",
+    "cwd",
+    "disabled",
+    "env",
+    "jitter",
+    "model",
+    "on_failure",
+    "permission_mode",
+    "timeout",
+    "tz",
+];
+
 /// The frontmatter exactly as written, before validation.
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
     description: Option<String>,
     cron: Option<String>,
     agent: Option<String>,
-    timeout: Option<String>,
+    /// Anything this build doesn't act on. Kept rather than dropped so it can
+    /// be reported: a key that silently does nothing is the worst outcome.
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_yaml_ng::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -33,9 +54,9 @@ pub struct TaskDefinition {
     pub description: String,
     pub schedule: Schedule,
     pub agent: Option<String>,
-    /// Parsed but not yet enforced; the runner gains timeouts in its own slice.
-    pub timeout: Option<String>,
     pub prompt: String,
+    /// Non-fatal complaints about the definition. A warned Task still runs.
+    pub warnings: Vec<String>,
 }
 
 impl TaskDefinition {
@@ -52,13 +73,40 @@ impl TaskDefinition {
             .description
             .ok_or_else(|| TaskError::InvalidFrontmatter("missing `description`".to_string()))?;
 
+        let warnings = parsed
+            .extra
+            .keys()
+            .map(|key| {
+                if NOT_YET_HONOURED.contains(&key.as_str()) {
+                    format!(
+                        "`{key}` is part of the task schema but this build does not act on it yet"
+                    )
+                } else {
+                    format!("unknown frontmatter key: {key}")
+                }
+            })
+            .collect();
+
         Ok(Self {
             description,
             schedule: Schedule::parse(&cron)?,
             agent: parsed.agent,
-            timeout: parsed.timeout,
             prompt: body.trim().to_string(),
+            warnings,
         })
+    }
+
+    /// The `description` alone, salvaged from a file that failed to parse, so
+    /// a Broken Task can still be listed by the name its author gave it.
+    pub fn peek_description(source: &str) -> Option<String> {
+        #[derive(Deserialize)]
+        struct OnlyDescription {
+            description: Option<String>,
+        }
+
+        let (frontmatter, _) = split_frontmatter(source).ok()?;
+        let parsed: OnlyDescription = serde_yaml_ng::from_str(frontmatter).ok()?;
+        parsed.description
     }
 }
 

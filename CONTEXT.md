@@ -60,6 +60,10 @@ _Avoid_: server, service
 A directory registered with the Daemon and scanned for Task files. Carries a unique name — defaulting to its basename, overridable in config — that forms the first half of every Task id.
 _Avoid_: watched directory, label, workspace
 
+**Ready**:
+A Task whose definition parses, validates, and names an Agent that exists. The opposite of Broken; the only state from which a Tick can produce a Run.
+_Avoid_: valid, healthy, ok
+
 **Broken**:
-A Task whose file exists but whose definition fails to parse or validate. Always surfaced visibly with its error; never silently unscheduled.
+A Task whose file exists but whose definition fails to parse or validate — a bad schedule, a missing description, an Agent that isn't configured. Always surfaced visibly with its error; never silently unscheduled.
 _Avoid_: invalid, errored

@@ -6,10 +6,11 @@
 
 use crate::clock::Clock;
 use crate::config::Config;
-use crate::discovery::{self, DiscoveredTask};
+use crate::discovery::{self, TaskHealth};
 use crate::run::{self, RunRecord, RunStatus, Trigger};
 use crate::runner;
 use crate::state::State;
+use crate::task::TaskDefinition;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
@@ -19,9 +20,13 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 
-/// A discovered Task plus the instant it next comes due.
+/// A Ready Task plus the instant it next comes due. Broken Tasks never get
+/// one of these, which is how "Broken never fires" is enforced.
 struct Scheduled {
-    task: DiscoveredTask,
+    id: String,
+    project_dir: PathBuf,
+    definition: TaskDefinition,
+    agent: String,
     next_fire_at: Option<DateTime<Utc>>,
 }
 
@@ -32,6 +37,8 @@ pub struct Daemon {
     state_dir: PathBuf,
     state: State,
     scheduled: Vec<Scheduled>,
+    /// Broken Tasks seen by the last scan. Reported, never scheduled.
+    broken_count: usize,
     /// Runs started and not yet finished.
     running: Vec<JoinHandle<()>>,
 }
@@ -55,6 +62,7 @@ impl Daemon {
             state_dir,
             state: State::default(),
             scheduled: Vec::new(),
+            broken_count: 0,
             running: Vec::new(),
         })
     }
@@ -73,22 +81,50 @@ impl Daemon {
         self.running.len()
     }
 
+    /// How many Tasks the last scan found Broken.
+    pub fn broken_count(&self) -> usize {
+        self.broken_count
+    }
+
     /// Rescans every Project and recomputes when each Task next fires.
     pub async fn reload(&mut self) -> Result<()> {
         let now = self.clock.now();
         self.state = State::load(&self.state_dir)?;
 
         let mut scheduled = Vec::new();
-        for project in &self.config.projects {
-            for task in discovery::discover(project)? {
-                let next_fire_at = task.definition.schedule.next_fire_after(now, &self.zone);
-                self.state
-                    .upsert(&task.id, &task.path.display().to_string());
-                scheduled.push(Scheduled { task, next_fire_at });
+        let mut broken = 0;
+
+        for task in discovery::scan_all(&self.config) {
+            self.state
+                .upsert(&task.id, &task.path.display().to_string());
+
+            for warning in task.warnings() {
+                tracing::warn!(task = %task.id, "{warning}");
+            }
+
+            match task.health {
+                TaskHealth::Ready { definition, agent } => {
+                    let next_fire_at = definition.schedule.next_fire_after(now, &self.zone);
+                    scheduled.push(Scheduled {
+                        id: task.id,
+                        project_dir: task.project_dir,
+                        definition: *definition,
+                        agent,
+                        next_fire_at,
+                    });
+                }
+                TaskHealth::Broken { error, .. } => {
+                    // Loud, and still listed: a typo must never look like a
+                    // task that simply chose not to run.
+                    broken += 1;
+                    tracing::error!(task = %task.id, "broken, will not run: {error}");
+                }
             }
         }
-        scheduled.sort_by(|a, b| a.task.id.cmp(&b.task.id));
+
+        scheduled.sort_by(|a, b| a.id.cmp(&b.id));
         self.scheduled = scheduled;
+        self.broken_count = broken;
 
         self.state.save(&self.state_dir)?;
         Ok(())
@@ -112,14 +148,13 @@ impl Daemon {
 
         for (index, scheduled_for) in due {
             self.scheduled[index].next_fire_at = self.scheduled[index]
-                .task
                 .definition
                 .schedule
                 .next_fire_after(now, &self.zone);
 
             if let Err(error) = self.start_run(index, Some(scheduled_for)) {
                 tracing::error!(
-                    task = %self.scheduled[index].task.id,
+                    task = %self.scheduled[index].id,
                     "run failed to start: {error:#}"
                 );
             }
@@ -139,16 +174,14 @@ impl Daemon {
     /// Starts one Run: records it as running, spawns the Agent, and hands the
     /// waiting to a background task so the scheduler stays responsive.
     fn start_run(&mut self, index: usize, scheduled_for: Option<DateTime<Utc>>) -> Result<()> {
-        let task = &self.scheduled[index].task;
+        let task = &self.scheduled[index];
         let task_id = task.id.clone();
         let working_dir = task.project_dir.clone();
         let prompt = task.definition.prompt.clone();
 
-        let agent_name = task
-            .definition
-            .agent
-            .clone()
-            .with_context(|| format!("task {task_id} names no agent"))?;
+        // The Agent was resolved and checked when the Task was scanned; a
+        // Task pointing at a missing one is Broken and never reaches here.
+        let agent_name = task.agent.clone();
         let template = self
             .config
             .agent(&agent_name)

@@ -16,6 +16,18 @@ pub struct AgentCommand {
     pub prompt_on_stdin: bool,
 }
 
+/// Checks a template can produce a command at all, without needing a prompt.
+/// Called when a Task is scanned, so a malformed template makes the Task
+/// Broken and visible rather than failing invisibly at fire time.
+pub fn validate_template(template: &str) -> Result<(), String> {
+    build_command(template, "").map(|_| ()).map_err(|error| {
+        format!(
+            "agent command template is unusable: {}",
+            error.to_string().trim_end_matches('.')
+        )
+    })
+}
+
 /// Builds the command for one Run from the Agent's template.
 pub fn build_command(template: &str, prompt: &str) -> Result<AgentCommand> {
     let tokens = split_tokens(template)?;
