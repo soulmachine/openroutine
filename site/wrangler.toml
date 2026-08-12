@@ -1,0 +1,19 @@
+# openroutine.dev — a static site on Workers Static Assets.
+#
+# There is deliberately no `main`: with no Worker script, every request is a
+# free static-asset request, so the free plan's Worker-invocation cap never
+# applies. Adding `main` or `run_worker_first` would change that.
+#
+# Only the apex is attached here. www.openroutine.dev is a zone Redirect Rule,
+# because Cloudflare's _redirects file does not support domain-level redirects.
+
+name = "openroutine-site"
+compatibility_date = "2026-08-11"
+
+[assets]
+directory = "./public/"
+not_found_handling = "404-page"
+
+[[routes]]
+pattern = "openroutine.dev"
+custom_domain = true

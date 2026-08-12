@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenRoutine — your AI agents’ crontab, as markdown</title>
+<meta name="description" content="The open-source alternative to Claude Code Routines and ChatGPT scheduled tasks. One markdown file per task, crontab syntax in the frontmatter, any AI coding agent underneath. Runs on your machine.">
+<link rel="canonical" href="https://openroutine.dev/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://openroutine.dev/">
+<meta property="og:title" content="OpenRoutine — your AI agents’ crontab, as markdown">
+<meta property="og:description" content="The open-source alternative to Claude Code Routines and ChatGPT scheduled tasks. Tasks live in your repo, run on your machine, and answer to no account, plan, or cap.">
+<meta property="og:image" content="https://openroutine.dev/og.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap">
+    <a class="wordmark" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <rect width="32" height="32" rx="7" fill="currentColor"/>
+        <g stroke="var(--bg)" stroke-width="3.4" stroke-linecap="round">
+          <line x1="16" y1="8" x2="16" y2="24"/>
+          <line x1="22.93" y1="12" x2="9.07" y2="20"/>
+          <line x1="22.93" y1="20" x2="9.07" y2="12"/>
+        </g>
+      </svg>
+      OpenRoutine
+    </a>
+    <nav>
+      <a href="/docs">Docs</a>
+      <a href="https://github.com/soulmachine/openroutine">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <div class="wrap">
+      <h1>Your AI agents’ crontab, as markdown.</h1>
+      <p class="lede">
+        <strong>OpenRoutine is the open-source alternative to
+        <a href="https://code.claude.com/docs/en/routines">Claude Code Routines</a> and
+        <a href="https://learn.chatgpt.com/docs/automations?surface=app">ChatGPT’s scheduled tasks</a></strong>
+        — the same unattended-agent idea, with the vendor locks removed. One markdown file per
+        task, crontab syntax in the frontmatter, any AI coding agent underneath. Tasks live in
+        your repo, run on your machine, and answer to no account, plan, or cap.
+      </p>
+      <pre><code>git clone https://github.com/soulmachine/openroutine
+cd openroutine
+cargo install --path .
+openroutine init .          <span class="c"># a config, and a sample task</span></code></pre>
+      <div class="cta">
+        <a class="btn" href="/docs">Read the docs</a>
+        <a class="btn ghost" href="https://github.com/soulmachine/openroutine">View on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>A task is a file</h2>
+      <p class="section-note">
+        The frontmatter says <em>what</em>, <em>when</em>, and <em>who</em>. The body is the prompt.
+        There is no second place to look.
+      </p>
+      <div class="split">
+        <pre><code><span class="k">---</span>
+<span class="k">description:</span> Nightly TODO/FIXME triage
+<span class="k">cron:</span> "0 2 * * *"
+<span class="k">agent:</span> claude
+<span class="k">timeout:</span> 30m
+<span class="k">---</span>
+
+Review all open TODO and FIXME comments in this repository.
+For any that are trivially fixable, fix them and open a pull
+request. Summarize everything else in reports/todo-digest.md.</code></pre>
+        <div>
+          <p>
+            Drop that in your repo as <code>todo-digest.cron.md</code> and it is the complete
+            definition — diffed, code-reviewed, and greppable like everything else you commit.
+          </p>
+          <p>
+            A single Rust daemon watches your registered projects, schedules everything
+            in-process, runs each task through the agent CLI you configure, and serves a REST
+            fire endpoint plus a local web UI for history, logs, and pause/resume.
+          </p>
+          <p>
+            Swap <code>agent: claude</code> for <code>agent: codex</code> — one line in a diff —
+            and the same task runs on the other vendor’s agent, which is precisely the move
+            neither vendor’s scheduler will ever offer.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Built on four positions</h2>
+      <p class="section-note">
+        A scheduled agent task is just a prompt with a schedule attached. Everything else follows
+        from taking that literally.
+      </p>
+      <div class="cards">
+        <div class="card">
+          <h3>Tasks live in your repo</h3>
+          <p>
+            Every field — schedule, agent, timeout, <code>disabled</code> — is frontmatter in a
+            <code>*.cron.md</code> file. Turning a task off is a commit your reviewer can see, not
+            invisible state in someone’s account.
+          </p>
+        </div>
+        <div class="card">
+          <h3>The scheduler is the daemon</h3>
+          <p>
+            Not launchd, not crontab — those run agents in a stripped environment with no
+            <code>PATH</code> or API keys, and are where agent jobs quietly go to die. Owning the
+            scheduler buys identical behaviour on macOS and Linux, real environments, hot reload,
+            and honest bookkeeping.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Agent-agnostic by construction</h3>
+          <p>
+            OpenRoutine never talks to a model API. An agent is just a command template, so any
+            CLI that accepts a prompt works — Claude Code, Codex, Gemini, or your own.
+          </p>
+        </div>
+        <div class="card">
+          <h3>One binary, zero databases</h3>
+          <p>
+            The scheduler, the API, and the UI in one static Rust binary. All durable data is two
+            plain-text formats: markdown you own, JSON the machine owns.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Compared to the vendors</h2>
+      <p class="section-note">
+        The major vendors proved that coding agents are good enough to work unattended. Each one
+        locks the recurring work to its own stack.
+      </p>
+      <div class="scroller">
+        <table class="compare">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Claude Code Routines</th>
+              <th>ChatGPT scheduled tasks</th>
+              <th class="mine">OpenRoutine</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Where it runs</th>
+              <td>Anthropic-managed cloud (or org-hosted environments)</td>
+              <td>OpenAI cloud; project tasks run locally, but only while the desktop app is running</td>
+              <td class="mine">Your machine, under a headless daemon supervised by launchd/systemd</td>
+            </tr>
+            <tr>
+              <th scope="row">Where tasks are defined</th>
+              <td>Web UI / <code>/schedule</code>, stored in your claude.ai account</td>
+              <td>Chat or the Scheduled page, stored in your OpenAI account</td>
+              <td class="mine"><code>*.cron.md</code> files in your repo</td>
+            </tr>
+            <tr>
+              <th scope="row">Agents</th>
+              <td>Claude Code only</td>
+              <td>GPT models only</td>
+              <td class="mine">Any agent CLI: Claude Code, Codex, Gemini, your own</td>
+            </tr>
+            <tr>
+              <th scope="row">Triggers</th>
+              <td>Schedules, API endpoint, GitHub events</td>
+              <td>Schedules and change-monitoring, hourly at most</td>
+              <td class="mine">Cron, one-shot, and manual schedules; REST fire endpoint</td>
+            </tr>
+            <tr>
+              <th scope="row">Management UI</th>
+              <td>claude.ai web UI</td>
+              <td>Scheduled page in the app</td>
+              <td class="mine">Local web UI, no account</td>
+            </tr>
+            <tr>
+              <th scope="row">Limits</th>
+              <td>Subscription usage, daily run caps</td>
+              <td>3–15 active tasks by plan; unattended tasks may auto-pause</td>
+              <td class="mine">Whatever your hardware tolerates</td>
+            </tr>
+            <tr>
+              <th scope="row">Availability</th>
+              <td>Research preview, paid plans</td>
+              <td>Paid plans</td>
+              <td class="mine">Open source</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">
+        The trade is honest in every direction: Routines gives you cloud execution, GitHub-event
+        triggers, and managed sandboxing; ChatGPT gives you a polished cross-device inbox and
+        change-monitoring; OpenRoutine gives you local files, local execution, no caps, and the
+        freedom to swap the agent.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Using it</h2>
+      <p class="section-note">
+        Requires a Rust toolchain; macOS and Linux only (Windows is an explicit non-goal).
+      </p>
+      <pre><code>openroutine list                  <span class="c"># every task, its schedule, and its health</span>
+openroutine status                <span class="c"># is the daemon up, and what does it hold</span>
+openroutine run &lt;task&gt; --dry-run  <span class="c"># exactly what a run would do, spawning nothing</span>
+openroutine run &lt;task&gt;            <span class="c"># fire one now, through the daemon</span>
+openroutine logs &lt;task&gt; --follow  <span class="c"># tail the latest run</span>
+openroutine pause --all           <span class="c"># stop everything firing, keep the daemon up</span>
+openroutine open                  <span class="c"># the local web UI, no account</span></code></pre>
+      <p>
+        Tasks are files, so everything else is ordinary editing: drop a <code>.cron.md</code> in a
+        registered directory and it schedules within seconds; <code>git pull</code> one in and the
+        same happens, flagged as new so you notice.
+      </p>
+      <p>
+        To leave it running on a machine you don’t sit at, <code>openroutine install</code>
+        registers the daemon with launchd or systemd — a per-user service, never sudo.
+        <a href="/docs#deploy">Deployment</a> covers the details, including the login-shell
+        <code>PATH</code> trap that catches everyone once.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Anything can fire a task</h2>
+      <p class="section-note">
+        The daemon serves a REST API on <code>127.0.0.1:7373</code>, guarded by a bearer token, so
+        alerting systems, deploy pipelines, and git hooks can start a run.
+      </p>
+      <pre><code>curl -X POST http://127.0.0.1:7373/v1/tasks/myrepo/todo-digest/fire \
+  -H "Authorization: Bearer $(openroutine token)" \
+  -d '{"text": "Sentry alert SEN-4521 fired in prod."}'</code></pre>
+      <p class="note">
+        The optional <code>text</code> reaches the agent labelled as caller-supplied context, not
+        as instructions — anyone who can reach the endpoint can send text, so text must not be able
+        to redefine the task.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Status</h2>
+      <p>
+        <strong>v1 is implemented</strong>: scheduler, runner, REST API, and web UI, in one binary.
+      </p>
+      <p class="note warn">
+        Known limits, all deliberate: no GitHub-event triggers and no notifications (the fire
+        endpoint is the integration point); state is written atomically against a killed process
+        but is not fsynced against power loss; the web UI’s rendering is verified by hand rather
+        than by a browser harness.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="closer">
+      If OpenRoutine disappeared tomorrow, your tasks would still be legible markdown, ready for
+      whatever runs them next.
+    </p>
+    <p class="meta">
+      <span>MIT licensed</span>
+      <span>© 2026 Frank Dai</span>
+      <a href="https://github.com/soulmachine/openroutine">GitHub</a>
+      <a href="/docs">Docs</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

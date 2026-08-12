@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs — OpenRoutine</title>
+<meta name="description" content="OpenRoutine reference: task file frontmatter, configuration keys, the CLI, the REST API, and deploying the daemon under launchd or systemd.">
+<link rel="canonical" href="https://openroutine.dev/docs">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://openroutine.dev/docs">
+<meta property="og:title" content="Docs — OpenRoutine">
+<meta property="og:description" content="Task file frontmatter, configuration keys, the CLI, the REST API, and deploying the daemon under launchd or systemd.">
+<meta property="og:image" content="https://openroutine.dev/og.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap">
+    <a class="wordmark" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <rect width="32" height="32" rx="7" fill="currentColor"/>
+        <g stroke="var(--bg)" stroke-width="3.4" stroke-linecap="round">
+          <line x1="16" y1="8" x2="16" y2="24"/>
+          <line x1="22.93" y1="12" x2="9.07" y2="20"/>
+          <line x1="22.93" y1="20" x2="9.07" y2="12"/>
+        </g>
+      </svg>
+      OpenRoutine
+    </a>
+    <nav>
+      <a href="/docs" aria-current="page">Docs</a>
+      <a href="https://github.com/soulmachine/openroutine">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="docs">
+
+  <section>
+    <div class="wrap">
+      <h1>Docs</h1>
+      <p class="lede">
+        Everything OpenRoutine does is driven by two plain-text files: a <code>*.cron.md</code>
+        task you own, and a <code>config.toml</code> that says where to look and what an agent is.
+      </p>
+      <ul class="docs-toc">
+        <li><a href="#install">Install</a></li>
+        <li><a href="#start">First five minutes</a></li>
+        <li><a href="#tasks">Task files</a></li>
+        <li><a href="#config">Configuration</a></li>
+        <li><a href="#cli">CLI reference</a></li>
+        <li><a href="#api">REST API</a></li>
+        <li><a href="#deploy">Deployment</a></li>
+        <li><a href="#concepts">Concepts</a></li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>Install</h2>
+      <p class="section-note">
+        Requires a Rust toolchain; macOS and Linux only. Windows is an explicit non-goal.
+      </p>
+      <pre><code>git clone https://github.com/soulmachine/openroutine
+cd openroutine
+cargo install --path .       <span class="c"># or: cargo build --release</span>
+openroutine init .           <span class="c"># writes a config and a sample task</span>
+openroutine list             <span class="c"># see what would run</span>
+openroutine serve            <span class="c"># run the scheduler in the foreground</span>
+openroutine install          <span class="c"># or register it as a boot service, no sudo</span></code></pre>
+      <p>
+        <code>init</code> writes <code>~/.config/openroutine/config.toml</code>, registers the
+        directory you name, and leaves a sample <code>hello.cron.md</code> beside it. Nothing else
+        to configure.
+      </p>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap">
+      <h2>First five minutes</h2>
+      <p class="section-note">What <code>openroutine init</code> prints, and what to do with it.</p>
+      <pre><code>Wrote config …/config.toml
+Wrote sample task …/hello.cron.md
+
+Try:  openroutine list                  # what would run
+      openroutine run hello --dry-run   # what it would do
+      openroutine serve                 # start the scheduler
+
+Nothing fires until a daemon is running. `openroutine install`
+registers one with your service manager, without sudo.</code></pre>
+      <p>
+        <code>run --dry-run</code> is the one to reach for first. It renders the fully resolved
+        execution plan — command line, environment, working directory, upcoming fire times —
+        without spawning anything. It is a read, not a run; nothing is recorded.
+      </p>
+    </div>
+  </section>
+
+  <section id="tasks">
+    <div class="wrap">
+      <h2>Task files</h2>
+      <p class="section-note">
+        A task is a single <code>*.cron.md</code> file. The frontmatter is the metadata, the body
+        is the prompt, and the file is the complete definition. Its identity is
+        <code>&lt;project&gt;/&lt;filename stem&gt;</code> — renaming or moving the file creates a
+        new task.
+      </p>
+      <pre><code><span class="k">---</span>
+<span class="k">description:</span> Say hello, nightly
+<span class="k">cron:</span> "0 9 * * *"
+<span class="k">---</span>
+
+Say hello, then stop. This is a sample task — edit or delete it.</code></pre>
+
+      <h3>Frontmatter keys</h3>
+      <div class="scroller">
+        <table class="keys">
+          <thead><tr><th>Key</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>description</code></td><td>What the task is for. Shown in the CLI, the web UI, and <code>CRONTAB.md</code>.</td></tr>
+            <tr><td><code>cron</code></td><td>A crontab expression, e.g. <code>"0 2 * * *"</code>. Mutually exclusive with <code>at</code>.</td></tr>
+            <tr><td><code>at</code></td><td>A single moment, RFC 3339. Fires once, then the task is Completed. Mutually exclusive with <code>cron</code>.</td></tr>
+            <tr><td><code>catch_up</code></td><td>Run one tick missed while the daemon was away, if it is recent enough to still be wanted. Off by default.</td></tr>
+            <tr><td><code>disabled</code></td><td>Switched off in the file itself — a reviewable commit rather than invisible machine state. Not scheduled at all, so it accrues no ticks and no skips.</td></tr>
+            <tr><td><code>agent</code></td><td>Which configured agent runs it. Falls back to <code>default_agent</code>.</td></tr>
+            <tr><td><code>jitter</code></td><td>How far the fire time may be nudged, deterministically. Accepts <code>2m</code>, <code>30s</code>, or a bare <code>0</code> for exact ticks.</td></tr>
+            <tr><td><code>timeout</code></td><td>The wall-clock budget for a run, or <code>none</code> to let it take as long as it takes. Falls back to <code>default_timeout</code>.</td></tr>
+            <tr><td><code>cwd</code></td><td>Where the agent starts, relative to the project root when relative.</td></tr>
+            <tr><td><code>model</code></td><td>Injected through the agent template’s <code>{model}</code> placeholder, as a single argument.</td></tr>
+            <tr><td><code>permission_mode</code></td><td>Injected through the <code>{permission_mode}</code> placeholder, as a single argument.</td></tr>
+            <tr><td><code>env</code></td><td>Environment for this task, layered over the config’s own.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">
+        <strong>Durations</strong> accept <code>30s</code>, <code>5m</code>, <code>2h</code>,
+        <code>1d</code>, or a bare number of seconds.
+      </p>
+      <p class="note">
+        <strong>A task with neither <code>cron</code> nor <code>at</code> is Manual</strong> — it
+        runs only when fired, from the API or the UI.
+      </p>
+      <p class="note warn">
+        <code>on_failure</code> and <code>tz</code> are declared in the v1 schema but
+        <strong>not yet honoured</strong>. OpenRoutine warns about them by name rather than
+        calling them unknown keys, because a key that silently does nothing is the worst outcome.
+      </p>
+    </div>
+  </section>
+
+  <section id="config">
+    <div class="wrap">
+      <h2>Configuration</h2>
+      <p class="section-note">
+        Human-owned and hand-editable, at <code>~/.config/openroutine/config.toml</code>. This is
+        what <code>openroutine init</code> writes:
+      </p>
+      <pre><code><span class="c"># openroutine — https://openroutine.dev</span>
+
+<span class="c"># The agent a task gets when it names none.</span>
+default_agent = "claude"
+
+<span class="c"># Directories whose *.cron.md files should be scheduled.</span>
+[[projects]]
+path = "/Users/you/tasks"
+
+<span class="c"># An agent is a command template. {prompt} is substituted as a</span>
+<span class="c"># single argument; without it, the prompt arrives on stdin.</span>
+[agents.claude]
+cmd = "claude -p {prompt}"
+
+[agents.codex]
+cmd = "codex exec {prompt}"</code></pre>
+
+      <h3>Keys</h3>
+      <div class="scroller">
+        <table class="keys">
+          <thead><tr><th>Key</th><th>Default</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>projects[].path</code></td><td>—</td><td>A directory to scan for <code>*.cron.md</code> files.</td></tr>
+            <tr><td><code>projects[].name</code></td><td>basename</td><td>Unique short name, forming the first half of every task id. May not be empty or contain <code>/</code>.</td></tr>
+            <tr><td><code>projects[].crontab_md</code></td><td>—</td><td>Whether to keep a <code>CRONTAB.md</code> at this project’s root. OpenRoutine never insists on writing into someone’s repository.</td></tr>
+            <tr><td><code>projects[].max_runs_per_task</code></td><td>—</td><td>Runs kept per task here, overriding the global setting.</td></tr>
+            <tr><td><code>agents.&lt;name&gt;.cmd</code></td><td>—</td><td>The command template. <code>{prompt}</code> is substituted as a single argument, never spliced into a shell string; without it the prompt arrives on stdin. <code>{model}</code> and <code>{permission_mode}</code> work the same way.</td></tr>
+            <tr><td><code>default_agent</code></td><td>unset</td><td>The agent for tasks that name none. Unset by default, so an omitted <code>agent:</code> leaves a task Broken until you opt in.</td></tr>
+            <tr><td><code>env</code></td><td>empty</td><td>Environment handed to every run, layered over the login shell’s own and under whatever the task itself sets.</td></tr>
+            <tr><td><code>max_parallel</code></td><td>unset</td><td>How many runs may be in flight at once, across every task. Unset means whatever the hardware tolerates.</td></tr>
+            <tr><td><code>max_runs_per_task</code></td><td><code>50</code></td><td>How many runs of each task are kept on disk.</td></tr>
+            <tr><td><code>max_log_bytes</code></td><td><code>100 MiB</code></td><td>How much of a run’s output is kept before the log is truncated.</td></tr>
+            <tr><td><code>default_timeout</code></td><td><code>1h</code></td><td>The timeout for tasks that name none. An unattended agent that hangs is the worst failure mode, so runs are bounded unless the author says otherwise.</td></tr>
+            <tr><td><code>bind</code></td><td>loopback</td><td>Where the local API listens. Widening it is possible, discouraged, and never removes the token requirement.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Run state — last run time, the tick it was scheduled for, recorded skips, pause toggles —
+        is machine-owned and lives in a <code>scheduled-tasks.json</code> outside your repo. Delete
+        it and you lose run history, not tasks.
+      </p>
+    </div>
+  </section>
+
+  <section id="cli">
+    <div class="wrap">
+      <h2>CLI reference</h2>
+      <p class="section-note">
+        <code>openroutine --help</code> for the same list. A global <code>--config &lt;PATH&gt;</code>
+        overrides the XDG config path on any command.
+      </p>
+      <div class="scroller">
+        <table class="keys">
+          <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>serve</code></td><td>Run the scheduler in the foreground.</td></tr>
+            <tr><td><code>list</code></td><td>Show every task, its schedule, and its health.</td></tr>
+            <tr><td><code>add &lt;dir&gt;</code></td><td>Register a directory so its tasks are scheduled. <code>--name</code> gives it a name; defaults to the directory’s own.</td></tr>
+            <tr><td><code>remove &lt;dir&gt;</code></td><td>Stop watching a directory.</td></tr>
+            <tr><td><code>init [dir]</code></td><td>Write a starter config and a sample task. Defaults to <code>.</code></td></tr>
+            <tr><td><code>status</code></td><td>Summarise the daemon and what it would be running.</td></tr>
+            <tr><td><code>run &lt;task&gt;</code></td><td>Fire a task now. <code>--dry-run</code> describes the run instead of starting one; <code>--text</code> adds context for this run — information for the agent, never instructions, and it cannot redefine the task.</td></tr>
+            <tr><td><code>logs &lt;task&gt;</code></td><td>Show a task’s most recent run. <code>--follow</code> keeps printing as the run writes more.</td></tr>
+            <tr><td><code>pause [task]</code></td><td>Hold a task, or everything with <code>--all</code>.</td></tr>
+            <tr><td><code>resume [task]</code></td><td>Release a task, or everything with <code>--all</code>.</td></tr>
+            <tr><td><code>install</code></td><td>Register the daemon with your service manager, without sudo. <code>--print</code> shows what would be written instead of writing it.</td></tr>
+            <tr><td><code>uninstall</code></td><td>Unregister the daemon. Config, state, and tasks are left alone.</td></tr>
+            <tr><td><code>open</code></td><td>Open the local web UI in a browser.</td></tr>
+            <tr><td><code>token</code></td><td>Print the API token. <code>--rotate</code> replaces it — anything using the old one stops working.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="api">
+    <div class="wrap">
+      <h2>REST API</h2>
+      <p class="section-note">
+        The daemon listens on <code>127.0.0.1:7373</code>, guarded by a bearer token from
+        <code>openroutine token</code>.
+      </p>
+      <pre><code>curl -X POST http://127.0.0.1:7373/v1/tasks/myrepo/todo-digest/fire \
+  -H "Authorization: Bearer $(openroutine token)" \
+  -d '{"text": "Sentry alert SEN-4521 fired in prod."}'</code></pre>
+      <p class="note">
+        The optional <code>text</code> reaches the agent labelled as caller-supplied context, not
+        as instructions — anyone who can reach the endpoint can send text, so text must not be able
+        to redefine the task.
+      </p>
+
+      <h3>Endpoints</h3>
+      <div class="scroller">
+        <table class="keys">
+          <thead><tr><th>Route</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>GET /v1/tasks</code></td><td>Every discovered task, with schedule and next fire time.</td></tr>
+            <tr><td><code>GET /v1/tasks/{project}/{name}</code></td><td>One task in detail.</td></tr>
+            <tr><td><code>GET /v1/tasks/{project}/{name}/runs</code></td><td>That task’s run history.</td></tr>
+            <tr><td><code>POST /v1/tasks/{project}/{name}/fire</code></td><td>Start a run. Returns a run id and its log path.</td></tr>
+            <tr><td><code>GET /v1/runs/{project}/{name}/{run}</code></td><td>One run in detail.</td></tr>
+            <tr><td><code>GET /v1/runs/{project}/{name}/{run}/log</code></td><td>That run’s log.</td></tr>
+            <tr><td><code>GET /v1/runs/{project}/{name}/{run}/log/stream</code></td><td>Live-tail the log over SSE.</td></tr>
+            <tr><td><code>POST /v1/runs/{project}/{name}/{run}/cancel</code></td><td>Stop a run in flight.</td></tr>
+            <tr><td><code>POST /v1/tasks/{project}/{name}/pause</code></td><td>Hold one task.</td></tr>
+            <tr><td><code>POST /v1/tasks/{project}/{name}/resume</code></td><td>Release one task.</td></tr>
+            <tr><td><code>POST /v1/pause</code></td><td>Hold every task on this machine.</td></tr>
+            <tr><td><code>POST /v1/resume</code></td><td>Release everything.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="deploy">
+    <div class="wrap">
+      <h2>Deployment</h2>
+      <p class="section-note">
+        To leave the daemon running unattended on a machine you don’t sit at — the Mac mini under
+        the desk, a home server — register it with the system’s service manager.
+      </p>
+      <pre><code>cargo install --path .        <span class="c"># install to a stable path; see below</span>
+openroutine init ~/tasks      <span class="c"># config, and a sample task to prove it works</span>
+openroutine install           <span class="c"># register with launchd/systemd, no sudo</span>
+openroutine status            <span class="c"># daemon: running (pid …)</span></code></pre>
+      <p>
+        <code>install</code> records the path of the binary that registers it, so run it from the
+        installed copy rather than from <code>target/release/openroutine</code> — a
+        <code>cargo clean</code> should not be able to unmake your scheduler. It writes a per-user
+        service and never asks for sudo. <code>openroutine install --print</code> shows exactly
+        what it would write, and what it would run, without writing anything.
+      </p>
+
+      <h3>Your agent must be on the login shell’s PATH</h3>
+      <p>
+        The daemon runs every agent through a <em>login</em> shell, so a run gets the same
+        <code>PATH</code>, shims, and API keys your terminal has. A login shell is not an
+        interactive one: zsh reads <code>.zshenv</code> and <code>.zprofile</code> but
+        <strong>not</strong> <code>.zshrc</code>, and bash reads <code>.bash_profile</code> but not
+        <code>.bashrc</code>. So an agent that only your <code>.zshrc</code> puts on the
+        <code>PATH</code> — anything in <code>~/.local/bin</code> is the usual case — is found when
+        you test by hand and missing once launchd starts the daemon:
+      </p>
+      <pre><code>zsh:1: command not found: claude</code></pre>
+      <p>
+        <code>openroutine list</code> warns before you get there. It samples the login shell the
+        way a service manager starts one — with <code>PATH</code> seeded to the bare
+        <code>/usr/bin:/bin:/usr/sbin:/sbin</code> a daemon inherits, never the <code>PATH</code>
+        your terminal happens to have — so it answers for the daemon rather than for you:
+      </p>
+      <pre><code>warning: "claude" is on your PATH here but not under a service manager, so
+scheduled Runs will fail; move its PATH export into your login profile</code></pre>
+      <p>
+        Fix it by moving the <code>PATH</code> export into <code>.zprofile</code>, which repairs
+        SSH and cron sessions at the same time, or by naming the agent absolutely:
+      </p>
+      <pre><code>[agents.claude]
+cmd = "/Users/you/.local/bin/claude -p {prompt}"</code></pre>
+      <p>Verify the way the daemon will see it — a login shell with none of your terminal’s inherited environment:</p>
+      <pre><code>env -i HOME="$HOME" SHELL=/bin/zsh PATH=/usr/bin:/bin /bin/zsh -lc 'command -v claude'</code></pre>
+
+      <h3>macOS</h3>
+      <p>
+        <code>install</code> writes a <strong>LaunchAgent</strong> to
+        <code>~/Library/LaunchAgents/</code>, so the daemon starts at <em>login</em> rather than at
+        boot, and launchd restarts it if it dies. On a headless machine, pair it with auto-login
+        (System Settings → Users &amp; Groups → Automatically log in as), which requires FileVault
+        to be off.
+      </p>
+      <p>
+        Auto-login is not only about the daemon starting. Agent CLIs keep credentials in your
+        <strong>login keychain</strong>, and that keychain is unlocked by the GUI login — a service
+        that starts without one finds it locked, and the agent reports itself logged out. That is
+        also why <code>install</code> does not write a root LaunchDaemon: starting before anyone
+        logs in is precisely the state in which the agent cannot authenticate, so the one thing a
+        LaunchDaemon buys is the one thing that breaks it. The trade runs the other way too, and it
+        is a real one: auto-login with FileVault off means physical access is a logged-in desktop.
+      </p>
+      <p>While you are there, stop the machine sleeping through its own schedules:</p>
+      <pre><code>sudo pmset -c sleep 0 displaysleep 0 disksleep 0  <span class="c"># never sleep</span>
+sudo pmset -c autorestart 1 womp 1                <span class="c"># return after power loss</span>
+launchctl print gui/$(id -u)/dev.openroutine.daemon | grep state</code></pre>
+
+      <h3>Linux</h3>
+      <p>
+        <code>install</code> writes a systemd user unit and enables lingering, so the daemon starts
+        at boot with no login session — the one platform where “no login needed” holds without an
+        asterisk.
+      </p>
+      <pre><code>systemctl --user status dev.openroutine.daemon
+journalctl --user -u dev.openroutine.daemon -f</code></pre>
+
+      <h3>Confirming it survives</h3>
+      <pre><code>openroutine run &lt;task&gt;   <span class="c"># a real run, end to end</span>
+openroutine logs &lt;task&gt;  <span class="c"># what the agent actually printed</span></code></pre>
+      <p>
+        Killing the daemon outright is a fair test: the service manager should bring it back within
+        seconds under a new pid. <code>openroutine uninstall</code> unregisters it and leaves your
+        config, state, and tasks untouched.
+      </p>
+    </div>
+  </section>
+
+  <section id="concepts">
+    <div class="wrap">
+      <h2>Concepts</h2>
+      <p class="section-note">
+        The vocabulary the CLI, the UI, and the docs all use. Precision here is deliberate — most
+        of these terms have a near-synonym that means something subtly different.
+      </p>
+      <div class="scroller">
+        <table class="keys">
+          <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>Task</code></td><td>A unit of agent work, defined entirely by a single <code>.cron.md</code> file. Its identity is <code>&lt;project&gt;/&lt;filename stem&gt;</code>; renaming or moving the file creates a new task.</td></tr>
+            <tr><td><code>Agent</code></td><td>A configured command template that accepts a prompt. Any CLI qualifies; OpenRoutine never talks to a model API itself.</td></tr>
+            <tr><td><code>Project</code></td><td>A directory registered with the daemon and scanned for task files. Its name forms the first half of every task id.</td></tr>
+            <tr><td><code>Daemon</code></td><td>The single long-lived process that is the scheduler, the runner, the API, and the UI. The OS supervises it and schedules nothing.</td></tr>
+            <tr><td><code>Tick</code></td><td>An instant at which a task’s schedule comes due. Every tick becomes exactly one run or one skip.</td></tr>
+            <tr><td><code>Run</code></td><td>A single execution of a task’s prompt by its agent, produced by a scheduled tick or by a fire.</td></tr>
+            <tr><td><code>Skip</code></td><td>A tick that was not run, recorded with its reason: <code>overlap</code>, <code>daemon-down</code>, <code>missed</code>, or <code>paused</code>. Never silent.</td></tr>
+            <tr><td><code>Fire</code></td><td>Starting a run on demand — via the API or UI — outside the schedule.</td></tr>
+            <tr><td><code>Dry run</code></td><td>Rendering a task’s fully resolved execution plan without spawning anything. A read, not a run; nothing is recorded.</td></tr>
+            <tr><td><code>Timeout</code></td><td>The wall-clock budget for a single run. When it expires the run’s whole process group is ended and the run is recorded as timed out — never left hanging.</td></tr>
+            <tr><td><code>Jitter</code></td><td>The deterministic offset between a task’s tick and the moment it fires, derived from the task id so it never changes between runs.</td></tr>
+            <tr><td><code>Manual</code></td><td>A task with no schedule — neither <code>cron</code> nor <code>at</code> — that runs only when fired.</td></tr>
+            <tr><td><code>One-shot</code></td><td>A task scheduled by a single future timestamp (<code>at</code>). It fires once, then becomes Completed. Not the same as Manual.</td></tr>
+            <tr><td><code>Completed</code></td><td>A one-shot task that has answered its moment. Machine state only: editing the timestamp gives it something to do again.</td></tr>
+            <tr><td><code>Catch-up</code></td><td>Opting a task into running one tick it missed while the daemon was away. Off by default.</td></tr>
+            <tr><td><code>Disabled</code></td><td>Switched off in its own frontmatter. Not scheduled at all, so it accrues no ticks and no skips — unlike a paused task.</td></tr>
+            <tr><td><code>Paused</code></td><td>Held at runtime. Machine-owned state, never part of the definition; a task runs only when neither disabled nor paused. A tick that arrives while held becomes a skip, not a gap.</td></tr>
+            <tr><td><code>Interrupted</code></td><td>A run whose daemon disappeared before it finished. Recorded on the next start, so no run is left claiming to be running forever.</td></tr>
+            <tr><td><code>Ready</code></td><td>A task whose definition parses, validates, and names an agent that exists. The only state from which a tick can produce a run.</td></tr>
+            <tr><td><code>Broken</code></td><td>A task whose file exists but whose definition fails to parse or validate. Always surfaced visibly with its error; never silently unscheduled.</td></tr>
+            <tr><td><code>Familiar</code></td><td>A task whose definition is the one that last started a run. A new or edited task is flagged instead — registering a project trusts its committers, so an arriving task is announced rather than blocked.</td></tr>
+            <tr><td><code>CRONTAB.md</code></td><td>The table OpenRoutine keeps at each project’s root: every task there, with its description, schedule, and agent. Derived from definitions alone, so it is safe to commit.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="closer">
+      If OpenRoutine disappeared tomorrow, your tasks would still be legible markdown, ready for
+      whatever runs them next.
+    </p>
+    <p class="meta">
+      <span>MIT licensed</span>
+      <span>© 2026 Frank Dai</span>
+      <a href="https://github.com/soulmachine/openroutine">GitHub</a>
+      <a href="/">Home</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!doctype html>
+<!--
+  Source for public/og.png. Not published — it lives outside public/.
+  Rasterize with:
+
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+      --headless --disable-gpu --hide-scrollbars \
+      --screenshot=public/og.png --window-size=1200,630 og.html
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background: #fbfaf8;
+    color: #1c1a17;
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 76px 80px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    /* A hairline of accent along the top edge, like the site's section rules. */
+    border-top: 10px solid #7a5c3e;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .brand svg { width: 46px; height: 46px; display: block; }
+  h1 {
+    font-size: 76px;
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+    max-width: 20ch;
+  }
+  p {
+    font-size: 28px;
+    line-height: 1.45;
+    color: #6b6560;
+    max-width: 34ch;
+    margin-top: 22px;
+  }
+  .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 24px;
+    color: #6b6560;
+  }
+  .foot .url { color: #7a5c3e; font-weight: 600; }
+  .foot .tags { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 21px; }
+</style>
+</head>
+<body>
+
+  <div class="brand">
+    <svg viewBox="0 0 32 32">
+      <rect width="32" height="32" rx="7" fill="#7a5c3e"/>
+      <g stroke="#fbfaf8" stroke-width="3.4" stroke-linecap="round">
+        <line x1="16" y1="8" x2="16" y2="24"/>
+        <line x1="22.93" y1="12" x2="9.07" y2="20"/>
+        <line x1="22.93" y1="20" x2="9.07" y2="12"/>
+      </g>
+    </svg>
+    OpenRoutine
+  </div>
+
+  <div>
+    <h1>Your AI agents&rsquo; crontab, as markdown.</h1>
+    <p>The open-source alternative to Claude Code Routines and ChatGPT scheduled tasks.</p>
+  </div>
+
+  <div class="foot">
+    <span class="url">openroutine.dev</span>
+    <span class="tags">*.cron.md &middot; any agent &middot; your machine</span>
+  </div>
+
+</body>
+</html>
