@@ -231,6 +231,51 @@ done
         path
     }
 
+    /// Creates another directory under the sandbox, ready to register.
+    pub fn add_project(&self, relative: &str) -> PathBuf {
+        let path = self.root.path().join(relative);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    /// A config registering both the default Project and `other`.
+    pub fn write_config_with_projects(&self) -> PathBuf {
+        let other = self.add_project("other");
+        let config = format!(
+            "[[projects]]\npath = {proj:?}\nname = \"proj\"\n\n\
+             [[projects]]\npath = {other:?}\nname = \"other\"\n\n\
+             [agents.stub]\ncmd = {cmd:?}\n",
+            proj = self.project_dir().display().to_string(),
+            other = other.display().to_string(),
+            cmd = format!("{} --run {{prompt}}", self.stub_path().display()),
+        );
+        fs::write(self.config_path(), config).unwrap();
+        self.config_path()
+    }
+
+    /// A config with agents but no Projects registered yet.
+    pub fn write_config_with_no_projects(&self) -> PathBuf {
+        let config = format!(
+            "[agents.stub]\ncmd = {cmd:?}\n",
+            cmd = format!("{} --run {{prompt}}", self.stub_path().display()),
+        );
+        fs::write(self.config_path(), config).unwrap();
+        self.config_path()
+    }
+
+    /// The standard config with an extra key inside the Project entry.
+    pub fn write_config_with_extra_project_key(&self, extra: &str) -> PathBuf {
+        let config = format!(
+            "[[projects]]\npath = {proj:?}\nname = \"proj\"\n{extra}\n\
+             [agents.stub]\ncmd = {cmd:?}\n",
+            proj = self.project_dir().display().to_string(),
+            extra = extra,
+            cmd = format!("{} --run {{prompt}}", self.stub_path().display()),
+        );
+        fs::write(self.config_path(), config).unwrap();
+        self.config_path()
+    }
+
     /// Writes a second copy of the stub Agent at `name`, for cases that need
     /// an executable path the template must quote.
     pub fn write_stub_agent_named(&self, name: &str) -> PathBuf {

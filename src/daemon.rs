@@ -62,6 +62,9 @@ impl Scheduled {
 }
 
 pub struct Daemon {
+    /// Where the config was loaded from, so a rescan can pick up a Project
+    /// registered or removed while the Daemon is running.
+    config_path: Option<PathBuf>,
     config: Config,
     clock: Arc<dyn Clock>,
     zone: Tz,
@@ -97,6 +100,7 @@ impl Daemon {
         let state_dir = config.state_dir()?;
         let default_timeout = config.default_timeout()?;
         Ok(Self {
+            config_path: None,
             default_timeout,
             config,
             clock,
@@ -109,6 +113,13 @@ impl Daemon {
             announced: HashMap::new(),
             has_scanned: false,
         })
+    }
+
+    /// Re-reads this config file on every rescan, so `add` and `remove`
+    /// reach a running Daemon without a restart.
+    pub fn watching_config(mut self, path: PathBuf) -> Self {
+        self.config_path = Some(path);
+        self
     }
 
     pub fn state_dir(&self) -> &PathBuf {
@@ -142,6 +153,7 @@ impl Daemon {
     /// Rescans every Project and recomputes when each Task next fires.
     pub async fn reload(&mut self) -> Result<()> {
         let now = self.clock.now();
+        self.reload_config();
         self.state = State::load(&self.state_dir)?;
 
         let scan = discovery::scan_all(&self.config);
@@ -166,6 +178,8 @@ impl Daemon {
             .map(|entry| (entry.id, (entry.digest, entry.pending)))
             .collect();
 
+        crate::crontab::write_all(&scan.tasks, &self.config);
+
         let mut scheduled = Vec::new();
         let mut broken = 0;
 
@@ -173,15 +187,26 @@ impl Daemon {
             self.state
                 .upsert(&task.id, &task.path.display().to_string());
 
-            for warning in task.warnings() {
-                tracing::warn!(task = %task.id, "{warning}");
+            // Never blocked, never quiet — but said once per change, not
+            // once per scan: rescans are frequent, and a warning repeated
+            // every half minute is noise nobody reads.
+            let mut notes: Vec<String> = task
+                .novelty(self.state.last_run_digest(&task.id))
+                .note()
+                .map(str::to_string)
+                .into_iter()
+                .chain(task.warnings().iter().cloned())
+                .collect();
+            if let TaskHealth::Broken { error, .. } = &task.health {
+                notes.push(format!("broken, will not run: {error}"));
             }
-
-            // Never blocked, never quiet: registering a Project trusts its
-            // committers, so an arriving or edited Task is announced.
-            if let Some(note) = task.novelty(self.state.last_run_digest(&task.id)).note() {
-                tracing::warn!(task = %task.id, "{note}");
+            let unheard = self.announced.get(&task.id) != Some(&notes);
+            if unheard {
+                for note in &notes {
+                    tracing::warn!(task = %task.id, "{note}");
+                }
             }
+            self.announced.insert(task.id.clone(), notes);
 
             match task.health {
                 TaskHealth::Ready { definition, agent } => {
@@ -206,15 +231,10 @@ impl Daemon {
                         agent,
                     });
                 }
-                TaskHealth::Broken { error, .. } => {
-                    // Loud, and still listed: a typo must never look like a
-                    // task that simply chose not to run.
+                TaskHealth::Broken { .. } => {
+                    // Counted here; announced above, alongside every other
+                    // note this Task has, so one scan says each thing once.
                     broken += 1;
-                    let note = vec![format!("broken, will not run: {error}")];
-                    if self.announced.get(&task.id) != Some(&note) {
-                        tracing::error!(task = %task.id, "{}", note[0]);
-                        self.announced.insert(task.id.clone(), note);
-                    }
                 }
             }
         }
@@ -227,6 +247,22 @@ impl Daemon {
 
         self.state.save(&self.state_dir)?;
         Ok(())
+    }
+
+    /// Picks up edits to the config file. A config that no longer parses is
+    /// reported and ignored: the Daemon keeps running what it already knows
+    /// rather than forgetting every Project over a typo.
+    fn reload_config(&mut self) {
+        let Some(path) = self.config_path.clone() else {
+            return;
+        };
+        match Config::load(&path) {
+            Ok(mut config) => {
+                config.state_dir = self.config.state_dir.clone();
+                self.config = config;
+            }
+            Err(error) => tracing::error!("keeping the previous config: {error:#}"),
+        }
     }
 
     /// The Tick a freshly loaded Task is waiting for.

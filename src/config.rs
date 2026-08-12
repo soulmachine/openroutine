@@ -49,6 +49,10 @@ pub struct ProjectConfig {
     /// Unique short name; defaults to the directory's basename.
     #[serde(default)]
     pub name: Option<String>,
+    /// Whether to keep a `CRONTAB.md` at this Project's root. Openroutine
+    /// never insists on writing into someone's repository.
+    #[serde(default)]
+    pub crontab_md: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +73,27 @@ impl Config {
         config
             .default_timeout()
             .with_context(|| format!("in config at {}", path.display()))?;
+
+        let mut seen: BTreeMap<String, &Path> = BTreeMap::new();
+        for project in &config.projects {
+            let name = project.resolved_name();
+            // A `/` would make the Task id ambiguous, since ids are
+            // `<project>/<task>`.
+            if name.is_empty() || name.contains('/') {
+                anyhow::bail!(
+                    "project name {name:?} ({}) may not be empty or contain `/`",
+                    project.path.display()
+                );
+            }
+            if let Some(other) = seen.insert(name.clone(), &project.path) {
+                anyhow::bail!(
+                    "two projects are both called {name:?} ({} and {}); \
+                     give one of them a `name` of its own",
+                    other.display(),
+                    project.path.display()
+                );
+            }
+        }
 
         for (name, agent) in &config.agents {
             crate::runner::check_placeholders(&agent.cmd)

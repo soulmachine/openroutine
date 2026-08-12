@@ -149,15 +149,17 @@ fn nothing_is_written_outside_the_sandbox() {
     wait_for_exit(&mut child);
 
     // Everything the daemon created lives under the temp root: the state dir
-    // it was told to use, and nothing in the Project but the task file.
-    let project_entries: Vec<String> = std::fs::read_dir(env.project_dir())
+    // it was told to use, and — inside the Project — only the CRONTAB.md it
+    // is documented to keep there.
+    let mut project_entries: Vec<String> = std::fs::read_dir(env.project_dir())
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
         .collect();
+    project_entries.sort();
     assert_eq!(
         project_entries,
-        vec!["todo-digest.cron.md".to_string()],
-        "the skeleton writes nothing into the Project"
+        vec!["CRONTAB.md".to_string(), "todo-digest.cron.md".to_string()],
+        "the daemon writes nothing else into the Project"
     );
 }
 

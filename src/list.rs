@@ -85,7 +85,9 @@ where
         )
         .collect();
 
-    let description = task.description().unwrap_or(NOT_APPLICABLE).to_string();
+    // Descriptions come from whoever can commit to the Project; a newline
+    // would otherwise break the row apart.
+    let description = one_line(task.description().unwrap_or(NOT_APPLICABLE));
 
     let cells = match &task.health {
         TaskHealth::Ready { definition, agent } => {
@@ -121,6 +123,17 @@ where
     };
 
     Row { cells, notes }
+}
+
+/// Collapses anything multi-line into a single readable line.
+fn one_line(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn push_cells(out: &mut String, cells: &[String; COLUMNS], widths: &[usize; COLUMNS]) {

@@ -260,35 +260,40 @@ fn task_name(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Walks a Project for Task files.
+///
+/// Uses the same rules a developer already expects from their tools: what
+/// `.gitignore` excludes is not a Task, `.git` is never searched, and a
+/// symlink is not followed — a link is not a reason to schedule a file the
+/// Project does not contain.
 fn collect_task_files(dir: &Path, found: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) => {
-            // Tasks under an unreadable directory would otherwise vanish from
-            // every listing without explanation.
-            tracing::warn!(dir = %dir.display(), "cannot scan for tasks: {error}");
-            return;
-        }
-    };
+    let walker = ignore::WalkBuilder::new(dir)
+        .follow_links(false)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(false)
+        .git_exclude(true)
+        .require_git(false)
+        .parents(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build();
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-
-        if file_type.is_dir() {
-            if path.file_name().is_some_and(|name| name == ".git") {
-                continue;
+    for entry in walker {
+        match entry {
+            Ok(entry) => {
+                let is_file = entry.file_type().is_some_and(|kind| kind.is_file());
+                if is_file
+                    && entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.ends_with(TASK_SUFFIX))
+                {
+                    found.push(entry.into_path());
+                }
             }
-            collect_task_files(&path, found);
-        } else if file_type.is_file()
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(TASK_SUFFIX))
-        {
-            found.push(path);
+            // Tasks under something unreadable would otherwise vanish from
+            // every listing without explanation.
+            Err(error) => tracing::warn!(dir = %dir.display(), "cannot scan for tasks: {error}"),
         }
     }
 }

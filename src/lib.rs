@@ -7,6 +7,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod crontab;
 pub mod daemon;
 pub mod digest;
 pub mod discovery;

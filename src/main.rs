@@ -39,6 +39,16 @@ enum Command {
     Serve,
     /// Show every Task, its schedule, and its health.
     List,
+    /// Register a directory so its Tasks are scheduled.
+    Add {
+        /// The directory to watch.
+        dir: PathBuf,
+        /// A name for it; defaults to the directory's own.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Stop watching a directory.
+    Remove { dir: PathBuf },
 }
 
 #[tokio::main]
@@ -49,6 +59,9 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(false)
+        // Diagnostics belong on stderr so `openroutine list | ...` stays a
+        // clean stream of report.
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
@@ -60,6 +73,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Serve => serve(&config_path).await,
         Command::List => list(&config_path),
+        Command::Add { dir, name } => add(&config_path, &dir, name.as_deref()),
+        Command::Remove { dir } => remove(&config_path, &dir),
     }
 }
 
@@ -73,12 +88,24 @@ fn list(config_path: &std::path::Path) -> Result<()> {
         tracing::warn!("ignoring unreadable run state: {error:#}");
         openroutine::state::State::default()
     });
-    let report = openroutine::list::render(
+    let mut report = openroutine::list::render(
         &scan.tasks,
         &state,
         SystemClock.now(),
         &openroutine::zone::host(),
     );
+
+    // A Project we could not read is not an empty one, and must not look
+    // like one.
+    for project in &config.projects {
+        let name = project.resolved_name();
+        if !scan.reachable_projects.contains(&name) {
+            report.push_str(&format!(
+                "\nproject {name:?} is unreachable: cannot read {}\n",
+                project.path.display()
+            ));
+        }
+    }
 
     // `openroutine list | head` closes the pipe early; that's the reader's
     // choice, not an error worth a panic.
@@ -88,13 +115,118 @@ fn list(config_path: &std::path::Path) -> Result<()> {
     }
 }
 
+/// Registers a Project, editing the config in place.
+fn add(config_path: &std::path::Path, dir: &std::path::Path, name: Option<&str>) -> Result<()> {
+    let dir = dir
+        .canonicalize()
+        .with_context(|| format!("no such directory: {}", dir.display()))?;
+    let config = Config::load(config_path)?;
+
+    if let Some(existing) = config
+        .projects
+        .iter()
+        .find(|project| project.path.canonicalize().is_ok_and(|path| path == dir))
+    {
+        println!(
+            "{} is already registered as {:?}.",
+            dir.display(),
+            existing.resolved_name()
+        );
+        return Ok(());
+    }
+
+    let name = name.map(str::to_string).unwrap_or_else(|| basename(&dir));
+    if let Some(clash) = config
+        .projects
+        .iter()
+        .find(|project| project.resolved_name() == name)
+    {
+        anyhow::bail!(
+            "a project called {name:?} is already registered ({}); \
+             pick another with --name",
+            clash.path.display()
+        );
+    }
+
+    let mut document = read_document(config_path)?;
+    let mut entry = toml_edit::Table::new();
+    entry["path"] = toml_edit::value(dir.display().to_string());
+    entry["name"] = toml_edit::value(name.clone());
+    document["projects"]
+        .or_insert(toml_edit::Item::ArrayOfTables(
+            toml_edit::ArrayOfTables::new(),
+        ))
+        .as_array_of_tables_mut()
+        .context("`projects` in the config is not a list of tables")?
+        .push(entry);
+    write_document(config_path, &document)?;
+
+    println!("Registered {} as {name:?}.", dir.display());
+    Ok(())
+}
+
+/// Unregisters a Project. Its Tasks stop being scheduled; nothing on disk in
+/// the Project itself is touched.
+fn remove(config_path: &std::path::Path, dir: &std::path::Path) -> Result<()> {
+    let wanted = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let mut document = read_document(config_path)?;
+
+    let Some(projects) = document
+        .get_mut("projects")
+        .and_then(|item| item.as_array_of_tables_mut())
+    else {
+        anyhow::bail!("{} is not registered", dir.display());
+    };
+
+    let before = projects.len();
+    projects.retain(|entry| {
+        let path = entry
+            .get("path")
+            .and_then(|path| path.as_str())
+            .unwrap_or("");
+        let path = std::path::Path::new(path);
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf()) != wanted
+    });
+    if projects.len() == before {
+        anyhow::bail!("{} is not registered", dir.display());
+    }
+
+    write_document(config_path, &document)?;
+    println!("Removed {}.", wanted.display());
+    Ok(())
+}
+
+fn basename(dir: &std::path::Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "project".to_string())
+}
+
+fn read_document(path: &std::path::Path) -> Result<toml_edit::DocumentMut> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading config at {}", path.display()))?;
+    raw.parse::<toml_edit::DocumentMut>()
+        .with_context(|| format!("parsing config at {}", path.display()))
+}
+
+fn write_document(path: &std::path::Path, document: &toml_edit::DocumentMut) -> Result<()> {
+    // The config is hand-owned and irreplaceable: write beside it and rename,
+    // so an interrupted write can never leave a truncated one behind.
+    let temporary = path.with_extension("toml.tmp");
+    std::fs::write(&temporary, document.to_string())
+        .with_context(|| format!("writing config at {}", temporary.display()))?;
+    std::fs::rename(&temporary, path)
+        .with_context(|| format!("replacing config at {}", path.display()))
+}
+
 async fn serve(config_path: &std::path::Path) -> Result<()> {
     // Before anything slow: a scan of a large project takes time, and a
     // service manager that signals during startup must not have to kill us.
     let mut shutdown = Shutdown::listen()?;
 
     let config = Config::load(config_path)?;
-    let mut daemon = Daemon::new(config, std::sync::Arc::new(SystemClock))?;
+    let mut daemon = Daemon::new(config, std::sync::Arc::new(SystemClock))?
+        .watching_config(config_path.to_path_buf());
 
     std::fs::create_dir_all(daemon.state_dir())
         .with_context(|| format!("creating state dir {}", daemon.state_dir().display()))?;
