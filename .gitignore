@@ -24,6 +24,9 @@ target
 DECISIONS.md
 DECISIONS.staged.md
 
+# Serena: local agent tooling config, not project configuration
+.serena/
+
 # Editor swap files
 *.swp
 *.swo
