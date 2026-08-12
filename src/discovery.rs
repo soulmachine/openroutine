@@ -238,22 +238,35 @@ fn assess(path: &Path, project_dir: &Path, config: &Config) -> (String, TaskHeal
         // the dark. Warned rather than Broken: a login profile may put it on
         // PATH conditionally, and refusing to schedule would be too strong.
         if let Ok(command) = crate::runner::build_command(&template.cmd, &Default::default())
-            && !crate::runner::program_is_findable(&command.program)
+            && let reach = crate::runner::program_reach(&command.program)
+            && reach != crate::runner::ProgramReach::Findable
         {
             // An absolute path either exists or it does not; a bare name is
-            // looked up on PATH. Saying the wrong one sends people the wrong
-            // way when they go to fix it.
+            // looked up on PATH, and a bare name your terminal can resolve
+            // but a service manager cannot is a third thing again. Saying
+            // the wrong one sends people the wrong way when they go to fix
+            // it — and the third is the one that costs an unattended night.
             let program = &command.program;
+            let named = *program == agent;
+            let interactive = reach == crate::runner::ProgramReach::InteractiveOnly;
             definition
                 .warnings
-                .push(match (program.contains('/'), *program == agent) {
-                    (true, _) => format!(
+                .push(match (program.contains('/'), interactive, named) {
+                    (true, _, _) => format!(
                         "agent {agent:?} runs {program:?}, which is not there or is not executable"
                     ),
-                    (false, true) => format!(
+                    (false, true, true) => format!(
+                        "{agent:?} is on your PATH here but not under a service manager, so \
+                         scheduled Runs will fail; move its PATH export into your login profile"
+                    ),
+                    (false, true, false) => format!(
+                        "agent {agent:?} runs {program:?}, which is on your PATH here but not \
+                         under a service manager; move its PATH export into your login profile"
+                    ),
+                    (false, false, true) => format!(
                         "{agent:?} is not on your login shell's PATH, so its Runs will fail"
                     ),
-                    (false, false) => format!(
+                    (false, false, false) => format!(
                         "agent {agent:?} runs {program:?}, which is not on your login shell's PATH"
                     ),
                 });

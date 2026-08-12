@@ -382,6 +382,32 @@ done
             .expect("binary should run")
     }
 
+    /// Runs the real binary with `env` layered on top, for the tests that
+    /// need to control what the Daemon's login shell would inherit.
+    pub fn run_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_openroutine"));
+        command
+            .args(args)
+            .arg("--config")
+            .arg(self.config_path())
+            .env("XDG_STATE_HOME", self.xdg_state_home());
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        command.output().expect("binary should run")
+    }
+
+    /// Writes an executable that does nothing, and returns the directory
+    /// holding it — somewhere to put a program that only some `PATH`s reach.
+    pub fn write_program_in(&self, dir: &str, name: &str) -> PathBuf {
+        let dir = self.root.path().join(dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        make_executable(&path);
+        dir
+    }
+
     /// Runs the binary and returns its stdout, requiring success.
     pub fn run_ok(&self, args: &[&str]) -> String {
         let output = self.run(args);

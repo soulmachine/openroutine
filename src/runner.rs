@@ -260,12 +260,24 @@ fn split_tokens(template: &str) -> Result<Vec<String>> {
     Ok(tokens)
 }
 
+/// What a service manager hands a process it starts, and so the baseline a
+/// login profile builds on in the deployed case. launchd sets exactly this;
+/// systemd's default for a user unit is a superset.
+const SERVICE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
 /// The `PATH` a Run will actually see.
 ///
 /// Runs launch through a login shell, so the Daemon's own `PATH` is the
 /// wrong thing to check against — under a service manager it is nearly
 /// empty, which is the very problem the login shell solves. This asks the
 /// shell once and remembers the answer.
+///
+/// The shell is asked with `PATH` seeded to what a service manager gives,
+/// never with the caller's own. A profile that appends (`PATH="$PATH:…"`)
+/// would otherwise hand back whatever the caller already had, so `list` run
+/// from a terminal — the only place anyone runs it — would call a program
+/// findable that the Daemon under launchd cannot find, which is precisely
+/// the case this check exists to catch.
 fn login_path() -> Option<&'static str> {
     static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     PATH.get_or_init(|| {
@@ -275,6 +287,7 @@ fn login_path() -> Option<&'static str> {
             .unwrap_or_else(|| FALLBACK_SHELL.to_string());
         let output = std::process::Command::new(shell)
             .args(["-l", "-c", "printf %s \"$PATH\""])
+            .env("PATH", SERVICE_PATH)
             .output()
             .ok()?;
         output
@@ -286,20 +299,49 @@ fn login_path() -> Option<&'static str> {
     .as_deref()
 }
 
-/// Whether the Agent's program can be found the way a Run would find it.
+/// How far an Agent's program can be reached.
 ///
 /// Advisory only: a profile may put something on `PATH` conditionally, so
 /// not finding it now is a reason to warn, never a reason to refuse.
-pub fn program_is_findable(program: &str) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramReach {
+    /// A Run will find it.
+    Findable,
+    /// Not where a Run looks, but on this process's own `PATH`: the profile
+    /// exports it for interactive shells only, so it resolves in the
+    /// terminal you are typing in and vanishes under a service manager.
+    InteractiveOnly,
+    /// Neither will find it.
+    Missing,
+}
+
+/// Whether the Agent's program can be found the way a Run would find it.
+pub fn program_reach(program: &str) -> ProgramReach {
     let candidate = std::path::Path::new(program);
     if candidate.is_absolute() || program.contains('/') {
-        return is_executable(candidate);
+        return match is_executable(candidate) {
+            true => ProgramReach::Findable,
+            false => ProgramReach::Missing,
+        };
     }
 
     let Some(path) = login_path() else {
         // Nothing to check against; say nothing rather than warn wrongly.
-        return true;
+        return ProgramReach::Findable;
     };
+    if on_path(path, program) {
+        return ProgramReach::Findable;
+    }
+    // Telling someone a program is missing when `command -v` finds it reads
+    // as a bug in us, so the two cases are worth separating: the fix for
+    // this one is which file the export lives in, not installing anything.
+    match std::env::var("PATH") {
+        Ok(here) if on_path(&here, program) => ProgramReach::InteractiveOnly,
+        _ => ProgramReach::Missing,
+    }
+}
+
+fn on_path(path: &str, program: &str) -> bool {
     path.split(':')
         .filter(|entry| !entry.is_empty())
         .any(|entry| is_executable(&std::path::Path::new(entry).join(program)))

@@ -324,6 +324,57 @@ fn an_agent_whose_program_is_missing_warns_without_breaking_the_task() {
     );
 }
 
+/// The check exists to predict what a service-managed Daemon will find, and
+/// it is only ever run from a terminal — so it must not answer with what the
+/// terminal can reach. A program on the caller's `PATH` and nowhere a login
+/// profile would put it is exactly the shape that reads "ready" in `list`
+/// and then fails at 2am under launchd.
+#[test]
+fn an_agent_only_the_calling_shell_can_reach_still_warns() {
+    let env = TestEnv::new();
+    env.write_task("nightly", NIGHTLY);
+    env.write_config_with_agent("blindspot-agent --run {prompt}");
+    let bin = env.write_program_in("interactive-bin", "blindspot-agent");
+
+    // A login shell with no profile of its own, so the only way to reach the
+    // program is the PATH we hand the caller — which a Run will not inherit.
+    let out = env.run_with_env(
+        &["list"],
+        &[
+            ("PATH", &format!("/usr/bin:/bin:{}", bin.display())),
+            ("SHELL", "/bin/sh"),
+            ("HOME", &env.path().display().to_string()),
+        ],
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+
+    assert!(
+        out.to_lowercase().contains("warning"),
+        "a program only the calling shell can reach is not findable by a Run:\n{out}"
+    );
+    assert!(
+        out.contains("service manager"),
+        "and the warning should name the PATH that is missing it, not just \
+         claim it is absent when `command -v` finds it:\n{out}"
+    );
+}
+
+/// The other half of the same fix: seeding the sampled `PATH` must not start
+/// warning about programs a service manager can perfectly well find.
+#[test]
+fn an_agent_on_the_service_managers_own_path_says_nothing() {
+    let env = TestEnv::new();
+    env.write_task("nightly", NIGHTLY);
+    env.write_config_with_agent("sh -c {prompt}");
+
+    let out = env.run_ok(&["list"]);
+
+    assert!(
+        !out.to_lowercase().contains("warning"),
+        "/bin/sh is on the barest PATH there is; nothing to warn about:\n{out}"
+    );
+}
+
 #[test]
 fn an_agent_named_by_a_command_that_is_not_installed_warns() {
     let env = TestEnv::new();

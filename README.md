@@ -115,6 +115,16 @@ is found when you test by hand and missing once launchd starts the daemon:
 zsh:1: command not found: claude
 ```
 
+`openroutine list` warns before you get there. It samples the login shell the
+way a service manager starts one — with `PATH` seeded to the bare
+`/usr/bin:/bin:/usr/sbin:/sbin` a daemon inherits, never the `PATH` your
+terminal happens to have — so it answers for the daemon rather than for you:
+
+```
+warning: "claude" is on your PATH here but not under a service manager, so
+scheduled Runs will fail; move its PATH export into your login profile
+```
+
 Fix it by moving the `PATH` export into `.zprofile`, which repairs SSH and
 cron sessions at the same time, or by naming the agent absolutely:
 
