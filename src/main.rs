@@ -69,6 +69,14 @@ enum Command {
         #[arg(long)]
         follow: bool,
     },
+    /// Register the daemon with your service manager, without sudo.
+    Install {
+        /// Show what would be written instead of writing it.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Unregister the daemon. Config, state, and Tasks are left alone.
+    Uninstall,
     /// Work out what a Task would do.
     Run {
         task: String,
@@ -139,6 +147,8 @@ async fn main() -> Result<()> {
         Command::Status => status(&config_path),
         Command::Logs { task, follow } => logs(&config_path, &task, follow),
         Command::Run { task, dry_run } => run(&config_path, &task, dry_run),
+        Command::Install { print } => install(&config_path, print),
+        Command::Uninstall => uninstall(&config_path),
     }
 }
 
@@ -508,6 +518,60 @@ fn resolve<'a>(
                 .join("\n")
         ),
     }
+}
+
+/// Registers the daemon so it comes back by itself.
+fn install(config_path: &std::path::Path, print: bool) -> Result<()> {
+    let definition = service_definition(config_path)?;
+
+    if print {
+        println!("# {}", definition.path.display());
+        print!("{}", definition.contents);
+        for command in definition.activate.iter().chain(&definition.deactivate) {
+            println!("# would run: {}", command.join(" "));
+        }
+        return Ok(());
+    }
+
+    openroutine::service::install(&definition)?;
+    println!("Installed {}", definition.path.display());
+    println!(
+        "The daemon will start {} and be restarted if it stops.",
+        if cfg!(target_os = "macos") {
+            "when you log in (pair with auto-login on a headless machine)"
+        } else {
+            "at boot, with no login session needed"
+        }
+    );
+    println!("Check it with:  openroutine status");
+    Ok(())
+}
+
+fn uninstall(config_path: &std::path::Path) -> Result<()> {
+    let definition = service_definition(config_path)?;
+    if openroutine::service::uninstall(&definition)? {
+        println!("Removed {}", definition.path.display());
+    } else {
+        println!(
+            "Nothing to remove; {} was not there",
+            definition.path.display()
+        );
+    }
+    println!("Your config, state, and tasks are untouched.");
+    Ok(())
+}
+
+fn service_definition(
+    config_path: &std::path::Path,
+) -> Result<openroutine::service::ServiceDefinition> {
+    let binary = std::env::current_exe().context("finding this binary")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .context("HOME is not set")?;
+    let config = config_path
+        .canonicalize()
+        .unwrap_or_else(|_| config_path.to_path_buf());
+    openroutine::service::definition(&binary, &config, &home)
 }
 
 async fn serve(config_path: &std::path::Path) -> Result<()> {

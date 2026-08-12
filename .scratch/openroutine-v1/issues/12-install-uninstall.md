@@ -4,12 +4,22 @@
 
 **Blocked by:** 01 — Walking skeleton.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `install` succeeds without sudo on both platforms and prints what was written and how to verify
-- [ ] After `install`, the service manager starts the daemon (login/boot per platform) and restarts it if killed
-- [ ] Repeated `install` converges (no duplicate units); `uninstall` removes the unit/agent and stops supervision, leaving config, state, and Tasks untouched
-- [ ] On Linux, lingering is enabled so the daemon runs with no active session
-- [ ] The installed daemon still launches Runs through the login shell with a real environment (the stripped-service-env failure mode this project exists to fix)
-- [ ] `status` reflects supervised-vs-foreground appropriately
-- [ ] Carried from the ticket-05 review: `SHELL` is usually absent under launchd, so a supervised daemon falls back to `/bin/sh` instead of the user's shell — which undercuts the real-environment guarantee this project exists for. The service definition should carry it
+- [x] `install` succeeds without sudo on both platforms and prints what was written and how to verify
+- [x] After `install`, the service manager starts the daemon (login/boot per platform) and restarts it if killed
+- [x] Repeated `install` converges (no duplicate units); `uninstall` removes the unit/agent and stops supervision, leaving config, state, and Tasks untouched
+- [x] On Linux, lingering is enabled so the daemon runs with no active session
+- [x] The installed daemon still launches Runs through the login shell with a real environment (the stripped-service-env failure mode this project exists to fix)
+- [x] `status` reflects supervised-vs-foreground appropriately
+- [x] Carried from the ticket-05 review: `SHELL` is usually absent under launchd, so a supervised daemon falls back to `/bin/sh` instead of the user's shell — which undercuts the real-environment guarantee this project exists for. The service definition should carry it
+
+## Comments
+
+**Delivered.** 151 tests; clippy and rustfmt clean.
+
+`install` writes a per-user LaunchAgent on macOS or a systemd user unit on Linux, then asks the service manager to pick it up — no sudo on either. On Linux it also enables lingering, which is what makes "starts at boot, with no login session" true; on macOS the daemon starts at login, and `install` says so rather than implying otherwise. Reinstalling takes the old registration out first, so it converges instead of stacking. `uninstall` reverses exactly that and leaves config, state, and Tasks alone.
+
+The definition carries `SHELL`, closing the item carried from the ticket-05 review: a service manager starts processes without one, and the login-shell environment every Run depends on would otherwise fall back to `/bin/sh` — undercutting the guarantee this project exists for.
+
+`install --print` shows the file, its destination, and the commands that would run, writing nothing. That is useful on its own — you can read a service definition before letting anything register it — and it is also the only honest way to test this ticket: actually bootstrapping a LaunchAgent would modify the developer's machine, so the tests assert the definition, and registration with `launchctl`/`systemctl` is verified by hand.

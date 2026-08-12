@@ -18,6 +18,7 @@ pub mod plan;
 pub mod run;
 pub mod runner;
 pub mod schedule;
+pub mod service;
 pub mod state;
 pub mod task;
 pub mod zone;

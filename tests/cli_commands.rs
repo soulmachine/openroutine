@@ -255,3 +255,40 @@ fn a_dry_run_of_a_broken_task_explains_instead_of_pretending() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("0 25 * * *"), "{stderr}");
 }
+
+// --- install ------------------------------------------------------------
+
+#[test]
+fn install_can_show_what_it_would_register_without_registering_it() {
+    let env = TestEnv::new();
+    env.write_task("nightly", NIGHTLY);
+    env.write_config();
+
+    let out = env.run_ok(&["install", "--print"]);
+
+    assert!(out.contains("openroutine"), "{out}");
+    assert!(
+        out.contains("serve") && out.contains(&env.config_path().display().to_string()),
+        "the service must start this daemon with this config:\n{out}"
+    );
+    assert!(
+        out.contains("SHELL"),
+        "and carry a SHELL, since a service manager provides none — which is \
+         what the login-shell environment depends on:\n{out}"
+    );
+    assert!(
+        out.to_lowercase().contains("keepalive") || out.contains("Restart=always"),
+        "and ask to be restarted if it stops:\n{out}"
+    );
+}
+
+#[test]
+fn install_print_writes_nothing_at_all() {
+    let env = TestEnv::new();
+    env.write_config();
+    let agents = env.path().join("Library/LaunchAgents");
+
+    env.run_ok(&["install", "--print"]);
+
+    assert!(!agents.exists(), "printing is not installing");
+}
