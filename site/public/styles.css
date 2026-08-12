@@ -175,7 +175,9 @@ pre .k { color: var(--accent); }
   letter-spacing: -0.02em;
 }
 
-.wordmark svg { display: block; width: 1.15rem; height: 1.15rem; }
+.wordmark img { display: block; width: 1.35rem; height: 1.35rem; flex: none; }
+/* A shade larger than the old line-art mark: this one carries interior
+ * detail — a document and a dial — that turns to mud much below this. */
 
 .masthead nav {
   display: flex;
