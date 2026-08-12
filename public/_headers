@@ -1,0 +1,10 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'
+
+# No Cache-Control overrides on purpose. Asset filenames carry no content hash,
+# so a long max-age on styles.css would serve fresh HTML against stale CSS for
+# the life of the cache after a deploy. Cloudflare's default — max-age=0,
+# must-revalidate with an ETag — revalidates at the edge for near-nothing.
