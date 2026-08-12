@@ -142,7 +142,10 @@ async fn state_records_the_task_and_its_latest_run() {
         task_path.canonicalize().unwrap().display().to_string(),
         "state keys back to the task file by absolute path"
     );
-    assert_eq!(entry["enabled"], true);
+    assert!(
+        entry["paused"].is_null(),
+        "a Task nobody held carries no pause flag at all: {entry}"
+    );
     assert_eq!(entry["lastScheduledFor"], "2026-08-11T02:00:00Z");
     assert_eq!(entry["lastRunAt"], "2026-08-11T02:00:00Z");
 }
@@ -710,4 +713,31 @@ async fn a_tick_answered_by_a_skip_is_not_counted_again_as_downtime() {
         "downtime starts after the Tick the overlap Skip already answered"
     );
     assert_eq!(downtime[0]["count"], 1);
+}
+
+#[tokio::test]
+async fn a_paused_task_does_not_fire_but_its_ticks_are_still_accounted_for() {
+    let env = TestEnv::new();
+    env.write_task("hourly", HOURLY_EXACT);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    daemon.set_paused(Some("proj/hourly"), true).unwrap();
+
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert!(env.calls().is_empty(), "held, so it did not run");
+    let skips = env.read_state()["recordedSkips"]["proj/hourly"].clone();
+    assert_eq!(
+        skips[0]["reason"], "paused",
+        "and the Tick is answered rather than lost: {skips}"
+    );
+
+    daemon.set_paused(Some("proj/hourly"), false).unwrap();
+    clock.set(at("2026-08-11T02:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+    assert_eq!(env.calls().len(), 1, "released, so it runs again");
 }

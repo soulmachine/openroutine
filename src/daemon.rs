@@ -42,13 +42,28 @@ struct Scheduled {
     pending: Option<Pending>,
 }
 
+/// A Run in flight, and what is needed to stop it.
+struct RunningRun {
+    handle: JoinHandle<()>,
+    run_id: String,
+    group: Option<i32>,
+}
+
 /// What happened when a Fire was asked for.
 #[derive(Debug, Clone)]
 pub enum FireOutcome {
     Started(String),
     AlreadyRunning,
+    Paused,
     NoSuchTask,
     Failed(String),
+}
+
+/// What happened when a cancellation was asked for.
+#[derive(Debug, Clone, Copy)]
+pub enum CancelOutcome {
+    Cancelled,
+    NotRunning,
 }
 
 /// A scheduled Task as seen from outside.
@@ -95,7 +110,7 @@ pub struct Daemon {
     broken_count: usize,
     /// Runs started and not yet finished, by Task id — a Task appearing here
     /// is why its next Tick becomes an overlap Skip.
-    running: HashMap<String, JoinHandle<()>>,
+    running: HashMap<String, RunningRun>,
     /// Resolved once at construction: a bad value must fail loudly at
     /// startup, not silently at 2am when a Tick tries to use it.
     default_timeout: crate::task::Timeout,
@@ -454,7 +469,7 @@ impl Daemon {
     /// no catch-up.
     pub async fn tick(&mut self) -> Result<()> {
         let now = self.clock.now();
-        self.running.retain(|_, handle| !handle.is_finished());
+        self.running.retain(|_, run| !run.handle.is_finished());
 
         let mut due: Vec<(usize, DateTime<Utc>)> = self
             .scheduled
@@ -480,6 +495,20 @@ impl Daemon {
             let id = self.scheduled[index].id.clone();
             self.advance(index, tick, now);
             self.state.note_tick(&id, tick);
+
+            // Held, by this Task's own pause or by the global one. The Tick
+            // is still answered — with a Skip — rather than disappearing.
+            if self.state.is_paused(&id) {
+                tracing::debug!(task = %id, scheduled_for = %tick, "skipped: paused");
+                self.state.record_skip(
+                    &id,
+                    Skip::Paused {
+                        scheduled_for: tick,
+                        recorded_at: now,
+                    },
+                );
+                continue;
+            }
 
             // A Task never runs concurrently with itself; the Tick it would
             // have answered is recorded rather than dropped.
@@ -577,19 +606,56 @@ impl Daemon {
         }
     }
 
+    /// Stops a Run that is in flight.
+    ///
+    /// Ends the whole process group, the same way a timeout does, so the
+    /// Agent's children go with it.
+    pub fn cancel(&mut self, task_id: &str, run_id: &str) -> CancelOutcome {
+        self.running.retain(|_, run| !run.handle.is_finished());
+        match self.running.get(task_id) {
+            Some(run) if run.run_id == run_id => {
+                signal_group(run.group, libc::SIGTERM);
+                CancelOutcome::Cancelled
+            }
+            Some(_) | None => CancelOutcome::NotRunning,
+        }
+    }
+
+    /// Holds or releases one Task, or every Task at once.
+    pub fn set_paused(&mut self, task: Option<&str>, paused: bool) -> Result<()> {
+        match task {
+            Some(id) => {
+                self.state.set_paused(id, paused);
+            }
+            None => self.state.paused = paused,
+        }
+        self.state.save(&self.state_dir)
+    }
+
+    /// Whether everything is held.
+    pub fn is_paused(&self, task: Option<&str>) -> bool {
+        match task {
+            Some(id) => self.state.is_paused(id),
+            None => self.state.paused,
+        }
+    }
+
     /// Starts a Run now, outside the schedule.
     ///
     /// A Task never runs concurrently with itself, so a Fire arriving while
     /// one is going is refused with the Run already in flight rather than
     /// quietly queued.
     pub fn fire(&mut self, task_id: &str, context: Option<&str>) -> FireOutcome {
-        self.running.retain(|_, handle| !handle.is_finished());
+        self.running.retain(|_, run| !run.handle.is_finished());
 
         let Some(index) = self.scheduled.iter().position(|entry| entry.id == task_id) else {
             return FireOutcome::NoSuchTask;
         };
         if self.running.contains_key(task_id) {
             return FireOutcome::AlreadyRunning;
+        }
+        if self.state.is_paused(task_id) {
+            return FireOutcome::Paused;
         }
 
         match self.start_run(index, None, context) {
@@ -602,7 +668,7 @@ impl Daemon {
     pub fn is_running(&self, task_id: &str) -> bool {
         self.running
             .get(task_id)
-            .is_some_and(|handle| !handle.is_finished())
+            .is_some_and(|run| !run.handle.is_finished())
     }
 
     /// Every Task currently scheduled, with what it is waiting for.
@@ -624,8 +690,8 @@ impl Daemon {
 
     /// Awaits every in-flight Run.
     pub async fn wait_for_running(&mut self) {
-        for (_, handle) in std::mem::take(&mut self.running) {
-            let _ = handle.await;
+        for (_, run) in std::mem::take(&mut self.running) {
+            let _ = run.handle.await;
         }
     }
 
@@ -799,7 +865,14 @@ impl Daemon {
                 tracing::error!(task = %record.task_id, "recording run: {error:#}");
             }
         });
-        self.running.insert(task_id, handle);
+        self.running.insert(
+            task_id,
+            RunningRun {
+                handle,
+                run_id: announced_id.clone(),
+                group,
+            },
+        );
 
         Ok(announced_id)
     }

@@ -71,7 +71,6 @@ OpenRoutine splits storage across two plain-text formats, with a strict rule abo
     {
       "id": "myrepo/todo-digest",
       "filePath": "/home/you/repos/myrepo/tasks/todo-digest.cron.md",
-      "enabled": true,
       "lastRunAt": "2026-08-11T02:00:04.113Z",
       "lastScheduledFor": "2026-08-11T02:00:00.000Z"
     }

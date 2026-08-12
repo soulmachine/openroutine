@@ -295,3 +295,123 @@ fn an_empty_history_is_an_empty_list_not_a_null() {
         "nothing found is not the same as nothing known: {runs}"
     );
 }
+
+// --- Operational controls -----------------------------------------------
+
+#[test]
+fn a_paused_task_refuses_to_fire_until_it_is_resumed() {
+    let env = TestEnv::new();
+    env.write_task("ondemand", MANUAL);
+    let api = serve(&env);
+
+    let (code, body) = api.send("POST", "/v1/tasks/proj/ondemand/pause", None, None);
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(body["paused"], true, "{body}");
+
+    let (code, body) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    assert_eq!(code, 409, "{body}");
+    assert_eq!(body["error"]["code"], "paused", "{body}");
+
+    api.send("POST", "/v1/tasks/proj/ondemand/resume", None, None);
+    let (code, _) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    assert_eq!(code, 202, "resuming lets it run again");
+}
+
+#[test]
+fn a_global_pause_holds_everything_and_survives_a_restart() {
+    let env = TestEnv::new();
+    env.write_task("ondemand", MANUAL);
+    {
+        let api = serve(&env);
+        let (code, body) = api.send("POST", "/v1/pause", None, None);
+        assert_eq!(code, 200, "{body}");
+    }
+
+    // A fresh daemon over the same state is still holding everything.
+    let api = serve(&env);
+    let (code, body) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+
+    assert_eq!(code, 409, "{body}");
+    assert_eq!(body["error"]["code"], "paused", "{body}");
+    assert_eq!(
+        env.read_state()["paused"],
+        true,
+        "the hold is recorded, not just remembered"
+    );
+}
+
+#[test]
+fn cancelling_a_run_ends_it() {
+    let env = TestEnv::new();
+    env.write_gated_stub_agent();
+    env.write_task("ondemand", MANUAL);
+    let api = serve(&env);
+
+    let (_, started) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    let run_id = started["run_id"].as_str().unwrap().to_string();
+
+    let (code, body) = api.send(
+        "POST",
+        &format!("/v1/runs/proj/ondemand/{run_id}/cancel"),
+        None,
+        None,
+    );
+    assert_eq!(code, 200, "{body}");
+
+    // Once it is gone, the task is free to run again — which is the point.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (code, _) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+        if code == 202 || Instant::now() > deadline {
+            assert_eq!(code, 202, "the cancelled run released the task");
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    env.open_gate();
+}
+
+#[test]
+fn cancelling_something_that_is_not_running_is_refused() {
+    let env = TestEnv::new();
+    env.write_task("ondemand", MANUAL);
+    let api = serve(&env);
+
+    let (code, body) = api.send(
+        "POST",
+        "/v1/runs/proj/ondemand/20260811T010000Z/cancel",
+        None,
+        None,
+    );
+
+    assert_eq!(code, 409, "{body}");
+    assert_eq!(body["error"]["code"], "not_running", "{body}");
+}
+
+#[test]
+fn the_log_can_be_streamed_while_a_run_is_going() {
+    let env = TestEnv::new();
+    env.write_gated_stub_agent();
+    env.write_task("ondemand", MANUAL);
+    let api = serve(&env);
+
+    let (_, started) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    let run_id = started["run_id"].as_str().unwrap().to_string();
+    env.open_gate();
+
+    let streamed = curl(&[
+        "-s",
+        "--max-time",
+        "10",
+        "-H",
+        &format!("Authorization: Bearer {}", api.token),
+        &format!("{}/v1/runs/proj/ondemand/{run_id}/log/stream", api.base),
+    ])
+    .expect("the stream should be reachable");
+
+    assert!(streamed.contains("data:"), "server-sent events: {streamed}");
+    assert!(
+        streamed.contains("stub agent ran"),
+        "carrying the log: {streamed}"
+    );
+}

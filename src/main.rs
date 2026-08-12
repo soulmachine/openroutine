@@ -78,6 +78,20 @@ enum Command {
     },
     /// Unregister the daemon. Config, state, and Tasks are left alone.
     Uninstall,
+    /// Hold a Task, or everything.
+    Pause {
+        /// Which Task; omit with --all.
+        task: Option<String>,
+        /// Hold every Task on this machine.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Release a Task, or everything.
+    Resume {
+        task: Option<String>,
+        #[arg(long)]
+        all: bool,
+    },
     /// Print the API token, or replace it.
     Token {
         /// Replace the token. Anything using the old one stops working.
@@ -153,10 +167,12 @@ async fn main() -> Result<()> {
         Command::Init { dir } => init(&config_path, &dir),
         Command::Status => status(&config_path),
         Command::Logs { task, follow } => logs(&config_path, &task, follow),
-        Command::Run { task, dry_run } => run(&config_path, &task, dry_run),
+        Command::Run { task, dry_run } => run(&config_path, &task, dry_run).await,
         Command::Install { print } => install(&config_path, print),
         Command::Uninstall => uninstall(&config_path),
         Command::Token { rotate } => token(&config_path, rotate),
+        Command::Pause { task, all } => hold(&config_path, task.as_deref(), all, true).await,
+        Command::Resume { task, all } => hold(&config_path, task.as_deref(), all, false).await,
     }
 }
 
@@ -475,17 +491,20 @@ fn follow_file(path: &std::path::Path) -> Result<()> {
 }
 
 /// Describes what a Run would do, or explains why it cannot.
-fn run(config_path: &std::path::Path, wanted: &str, dry_run: bool) -> Result<()> {
+async fn run(config_path: &std::path::Path, wanted: &str, dry_run: bool) -> Result<()> {
     let config = Config::load(config_path)?;
     let scan = openroutine::discovery::scan_all(&config);
     let task = resolve(&scan.tasks, wanted)?;
 
     if !dry_run {
-        anyhow::bail!(
-            "firing a task goes through the daemon's API, which this build does not have yet; \
-             use `--dry-run` to see what {} would do",
-            task.id
+        let id = task.id.clone();
+        let answer = call_api(config_path, "POST", &format!("/v1/tasks/{id}/fire"), None).await?;
+        println!(
+            "Started {} — {}",
+            answer["run_id"].as_str().unwrap_or("a run"),
+            answer["log"].as_str().unwrap_or("see `openroutine logs`")
         );
+        return Ok(());
     }
 
     let plan =
@@ -525,6 +544,80 @@ fn resolve<'a>(
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
+    }
+}
+
+/// Holds or releases Tasks, through the daemon so a running one obeys.
+async fn hold(
+    config_path: &std::path::Path,
+    task: Option<&str>,
+    all: bool,
+    paused: bool,
+) -> Result<()> {
+    if task.is_none() && !all {
+        anyhow::bail!("name a task, or pass --all");
+    }
+    let path = match task {
+        Some(name) => {
+            let config = Config::load(config_path)?;
+            let scan = openroutine::discovery::scan_all(&config);
+            let id = resolve(&scan.tasks, name)?.id.clone();
+            format!("/v1/tasks/{id}/{}", verb(paused))
+        }
+        None => format!("/v1/{}", verb(paused)),
+    };
+
+    let answer = call_api(config_path, "POST", &path, None).await?;
+    println!(
+        "{} {}",
+        if paused { "Paused" } else { "Resumed" },
+        answer["scope"].as_str().unwrap_or("everything")
+    );
+    Ok(())
+}
+
+fn verb(paused: bool) -> &'static str {
+    if paused { "pause" } else { "resume" }
+}
+
+/// Asks the running daemon to do something.
+async fn call_api(
+    config_path: &std::path::Path,
+    method: &str,
+    path: &str,
+    body: Option<String>,
+) -> Result<serde_json::Value> {
+    let config = Config::load(config_path)?;
+    let state_dir = config.state_dir()?;
+    if !openroutine::lock::is_held(&state_dir) {
+        anyhow::bail!("no daemon is running; start one with `openroutine serve`");
+    }
+    let token = openroutine::token::read(&state_dir)?
+        .context("the daemon has no API token yet; start it once with `openroutine serve`")?;
+
+    let url = format!("http://{}{path}", config.bind());
+    let mut request = std::process::Command::new("curl");
+    request
+        .args(["-s", "-X", method, "-H"])
+        .arg(format!("Authorization: Bearer {token}"))
+        .arg("-w")
+        .arg("\n%{http_code}");
+    if let Some(body) = &body {
+        request.args(["-H", "Content-Type: application/json", "-d", body]);
+    }
+    let output = request
+        .arg(&url)
+        .output()
+        .context("running curl to reach the daemon")?;
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let (payload, code) = raw.rsplit_once('\n').unwrap_or(("", "0"));
+    let parsed: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::json!({}));
+
+    if code.trim().starts_with('2') {
+        Ok(parsed)
+    } else {
+        anyhow::bail!("{}", parsed["error"]["message"].as_str().unwrap_or(payload))
     }
 }
 

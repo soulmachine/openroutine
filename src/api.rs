@@ -31,6 +31,15 @@ pub fn router(api: Api) -> Router {
         .route("/v1/tasks/{project}/{name}/fire", post(fire))
         .route("/v1/runs/{project}/{name}/{run}", get(run_detail))
         .route("/v1/runs/{project}/{name}/{run}/log", get(run_log))
+        .route(
+            "/v1/runs/{project}/{name}/{run}/log/stream",
+            get(run_log_stream),
+        )
+        .route("/v1/runs/{project}/{name}/{run}/cancel", post(cancel))
+        .route("/v1/tasks/{project}/{name}/pause", post(pause_task))
+        .route("/v1/tasks/{project}/{name}/resume", post(resume_task))
+        .route("/v1/pause", post(pause_all))
+        .route("/v1/resume", post(resume_all))
         .with_state(api)
 }
 
@@ -256,6 +265,11 @@ async fn fire(
             "already_running",
             format!("{id} is already running; cancel it first if you mean to replace it"),
         )),
+        FireOutcome::Paused => Err(Failure(
+            StatusCode::CONFLICT,
+            "paused",
+            format!("{id} is paused; resume it before firing"),
+        )),
         FireOutcome::NoSuchTask => Err(unknown_task(&id)),
         FireOutcome::Failed(reason) => Err(Failure(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -263,4 +277,142 @@ async fn fire(
             reason,
         )),
     }
+}
+
+async fn pause_task(
+    State(api): State<Api>,
+    headers: HeaderMap,
+    Path((project, name)): Path<(String, String)>,
+) -> Result<Json<Value>, Failure> {
+    hold(api, headers, Some(format!("{project}/{name}")), true).await
+}
+
+async fn resume_task(
+    State(api): State<Api>,
+    headers: HeaderMap,
+    Path((project, name)): Path<(String, String)>,
+) -> Result<Json<Value>, Failure> {
+    hold(api, headers, Some(format!("{project}/{name}")), false).await
+}
+
+async fn pause_all(State(api): State<Api>, headers: HeaderMap) -> Result<Json<Value>, Failure> {
+    hold(api, headers, None, true).await
+}
+
+async fn resume_all(State(api): State<Api>, headers: HeaderMap) -> Result<Json<Value>, Failure> {
+    hold(api, headers, None, false).await
+}
+
+async fn hold(
+    api: Api,
+    headers: HeaderMap,
+    task: Option<String>,
+    paused: bool,
+) -> Result<Json<Value>, Failure> {
+    authorise(&api, &headers)?;
+    let mut daemon = api.daemon.lock().await;
+
+    if let Some(id) = &task
+        && !daemon.scheduled_tasks().iter().any(|entry| &entry.id == id)
+    {
+        return Err(unknown_task(id));
+    }
+
+    daemon
+        .set_paused(task.as_deref(), paused)
+        .map_err(|error| {
+            Failure(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could_not_save",
+                format!("{error:#}"),
+            )
+        })?;
+
+    Ok(Json(json!({
+        "scope": task.clone().unwrap_or_else(|| "all".to_string()),
+        "paused": paused,
+    })))
+}
+
+async fn cancel(
+    State(api): State<Api>,
+    headers: HeaderMap,
+    Path((project, name, run)): Path<(String, String, String)>,
+) -> Result<Json<Value>, Failure> {
+    authorise(&api, &headers)?;
+    let id = format!("{project}/{name}");
+    let mut daemon = api.daemon.lock().await;
+
+    match daemon.cancel(&id, &run) {
+        crate::daemon::CancelOutcome::Cancelled => {
+            Ok(Json(json!({ "runId": run, "cancelled": true })))
+        }
+        crate::daemon::CancelOutcome::NotRunning => Err(Failure(
+            StatusCode::CONFLICT,
+            "not_running",
+            format!("run {run:?} of {id:?} is not in flight"),
+        )),
+    }
+}
+
+/// Streams a Run's log as it is written.
+async fn run_log_stream(
+    State(api): State<Api>,
+    headers: HeaderMap,
+    Path((project, name, run)): Path<(String, String, String)>,
+) -> Result<Response, Failure> {
+    authorise(&api, &headers)?;
+    let id = format!("{project}/{name}");
+    let state_dir = api.daemon.lock().await.state_dir().clone();
+    let path = crate::run::task_runs_dir(&state_dir, &id)
+        .join(&run)
+        .join(crate::run::RUN_LOG);
+    if !path.exists() {
+        return Err(Failure(
+            StatusCode::NOT_FOUND,
+            "no_such_run",
+            format!("no log for run {run:?} of {id:?}"),
+        ));
+    }
+
+    let stream = async_stream::stream! {
+        let mut offset = 0u64;
+        let mut settled = 0;
+        loop {
+            match tail(&path, offset) {
+                Ok((chunk, next)) if !chunk.is_empty() => {
+                    offset = next;
+                    settled = 0;
+                    yield Ok::<_, std::convert::Infallible>(
+                        axum::response::sse::Event::default().data(chunk),
+                    );
+                }
+                _ => {
+                    // The Run is over once the record says so and nothing
+                    // more has arrived; a couple of quiet passes avoids
+                    // ending on a gap between writes.
+                    let finished = crate::run::read_record(&state_dir, &id, &run)
+                        .is_some_and(|record| record.status != crate::run::RunStatus::Running);
+                    settled += 1;
+                    if finished && settled > 2 {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+        }
+    };
+
+    Ok(axum::response::Sse::new(stream).into_response())
+}
+
+/// Reads whatever has been appended since `offset`.
+fn tail(path: &std::path::Path, offset: u64) -> std::io::Result<(String, u64)> {
+    use std::io::{Read, Seek};
+    let mut file = std::fs::File::open(path)?;
+    file.seek(std::io::SeekFrom::Start(offset))?;
+    let mut chunk = String::new();
+    file.read_to_string(&mut chunk)?;
+    let next = offset + chunk.len() as u64;
+    Ok((chunk, next))
 }

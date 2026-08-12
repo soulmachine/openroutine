@@ -61,8 +61,8 @@ A Task switched off in its own definition (frontmatter). Part of the reviewable,
 _Avoid_: paused
 
 **Paused**:
-A Task temporarily switched off at runtime. Machine-owned state, never part of the definition. A Task runs only when neither Disabled nor Paused. Pausing can also be daemon-wide: a persisted global pause stops all firing while the Daemon, API, and UI stay up.
-_Avoid_: disabled
+A Task held at runtime, or every Task at once. Machine-owned state, never part of the definition; a Task runs only when neither Disabled nor Paused. A global pause stops all firing while the Daemon, API, and UI stay up, and survives a restart. A Tick that arrives while held becomes a Skip, not a gap.
+_Avoid_: disabled, enabled
 
 **CRONTAB.md**:
 The table OpenRoutine keeps at each Project's root: every Task there, with its description, schedule, and Agent. Derived from definitions alone, so it changes only when a definition does and is safe to commit.

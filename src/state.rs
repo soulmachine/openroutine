@@ -36,6 +36,12 @@ pub enum Skip {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,
     },
+    /// The Task was held when its Tick came due.
+    #[serde(rename_all = "camelCase")]
+    Paused {
+        scheduled_for: DateTime<Utc>,
+        recorded_at: DateTime<Utc>,
+    },
     /// The Daemon was running but did not reach these Ticks in time — a
     /// suspended laptop, or a scheduler pass that ran long.
     #[serde(rename_all = "camelCase")]
@@ -50,6 +56,10 @@ pub enum Skip {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct State {
+    /// Set while every Task is held: the daemon, API, and UI stay up so the
+    /// machine can be inspected, but nothing fires.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
     pub scheduled_tasks: Vec<TaskState>,
     /// Keyed by Task id, oldest first.
     pub recorded_skips: BTreeMap<String, Vec<Skip>>,
@@ -60,7 +70,10 @@ pub struct State {
 pub struct TaskState {
     pub id: String,
     pub file_path: String,
-    pub enabled: bool,
+    /// Held at runtime. Distinct from `disabled:` in the file, which travels
+    /// with the repository; a Task runs only when neither is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_run_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -86,7 +99,7 @@ impl TaskState {
         Self {
             id,
             file_path,
-            enabled: true,
+            paused: false,
             last_run_at: None,
             last_scheduled_for: None,
             last_run_digest: None,
@@ -174,6 +187,22 @@ impl State {
 
     pub fn last_scheduled_for(&self, id: &str) -> Option<DateTime<Utc>> {
         self.task(id).and_then(|task| task.last_scheduled_for)
+    }
+
+    /// Whether this Task is held, individually or by the global pause.
+    pub fn is_paused(&self, id: &str) -> bool {
+        self.paused || self.task(id).is_some_and(|task| task.paused)
+    }
+
+    /// Holds or releases one Task. Returns whether anything changed.
+    pub fn set_paused(&mut self, id: &str, paused: bool) -> bool {
+        match self.task_mut(id) {
+            Some(task) if task.paused != paused => {
+                task.paused = paused;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// When this Task last started a Run.
