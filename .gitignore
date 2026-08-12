@@ -23,3 +23,8 @@ target
 # swe-workflow: decision journal kept local-only (decisions=local)
 DECISIONS.md
 DECISIONS.staged.md
+
+# Editor swap files
+*.swp
+*.swo
+*~
