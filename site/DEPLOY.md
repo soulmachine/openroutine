@@ -52,9 +52,18 @@ revoked earlier; leave it alone.
 The Worker name in the dashboard must stay `openroutine-site` — it has to match `name` in
 `wrangler.toml` or the build fails.
 
-Both halves are worth confirming rather than assuming: a push touching `site/` should appear
-under the **Deployments** tab within a minute, and a code-only push should produce no build at
-all.
+### What has actually been observed
+
+Commit `ada2d64` touched only `site/`. The build was queued within about fifteen seconds of the
+push, succeeded, and promoted version `9081fb96` to 100% of traffic — listed under **Deployments**
+against the commit and its author, rather than as the `Manually deployed … Wrangler` entries the
+earlier hand-deploys produced. Every route answered afterwards: `/` 200, `/docs` 200,
+`/docs.html` 307, `/nope` 404, `/styles.css` 200, `/og.png` 200.
+
+The other half is unconfirmed: no code-only commit has been pushed since the watch path was set,
+so nothing has yet demonstrated that `site/*` suppresses a build. Watch the next Rust-only push —
+**Deployments** should stay unchanged. If a build starts anyway, the include pattern is matching
+more than intended; narrowing it is a one-field edit under Settings → Build.
 
 ## B. Redirect www to the apex
 

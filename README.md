@@ -4,7 +4,10 @@
 
 **OpenRoutine is the open-source alternative to [Claude Code Routines](https://code.claude.com/docs/en/routines) and [ChatGPT's scheduled tasks](https://learn.chatgpt.com/docs/automations?surface=app)** — the same unattended-agent idea, with the vendor locks removed. One markdown file per task, crontab syntax in the frontmatter, any AI coding agent underneath. Tasks live in your repo, run on your machine, and answer to no account, plan, or cap.
 
-**Website:** [openroutine.dev](https://openroutine.dev)
+**Website:** [openroutine.dev](https://openroutine.dev) — hand-written HTML under
+[`site/`](site/), no build step. Cloudflare Workers Builds watches this repository, so a push to
+`main` that touches `site/` deploys it; one that touches only the Rust project does not trigger
+a build. [site/DEPLOY.md](site/DEPLOY.md) has the settings.
 
 ## A task is a file
 
