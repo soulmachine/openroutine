@@ -25,6 +25,9 @@ use tokio::task::JoinHandle;
 /// A minutely Task down for a month is ~43k; the bound keeps a pathological
 /// outage from stalling startup.
 const MAX_COUNTED_MISSES: usize = 50_000;
+/// How stale a missed Tick may be and still be worth catching up on. Beyond
+/// this it is history, not work anybody is still waiting for.
+const CATCH_UP_WINDOW: chrono::Duration = chrono::Duration::days(7);
 
 /// A Ready Task plus when it next comes due. Broken Tasks never get one of
 /// these, which is how "Broken never fires" is enforced.
@@ -81,6 +84,9 @@ pub struct Daemon {
     default_timeout: crate::task::Timeout,
     /// What was last said about each Task, so a rescan repeats nothing.
     announced: HashMap<String, Vec<String>>,
+    /// Ticks missed while away that `catch_up` says should still run, found
+    /// during the first scan and fired by the next pass.
+    catching_up: HashMap<String, DateTime<Utc>>,
     /// Whether this Daemon has scanned yet. Downtime is a startup question:
     /// only the first scan can tell missed Ticks from ordinary ones.
     has_scanned: bool,
@@ -111,6 +117,7 @@ impl Daemon {
             broken_count: 0,
             running: HashMap::new(),
             announced: HashMap::new(),
+            catching_up: HashMap::new(),
             has_scanned: false,
         })
     }
@@ -289,6 +296,14 @@ impl Daemon {
         definition: &TaskDefinition,
         now: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
+        // A One-shot that already answered its moment is Completed; only a
+        // new moment in the file gives it something to do again.
+        if let Some(moment) = definition.schedule.one_shot_at()
+            && self.state.completed_for(id) == Some(moment)
+        {
+            return None;
+        }
+
         let lookback = definition
             .jitter
             .unwrap_or(crate::jitter::DEFAULT_WINDOW)
@@ -342,6 +357,33 @@ impl Daemon {
     /// collapsed Skip. A month of missed minutely Ticks is one honest entry,
     /// not forty thousand rows nobody reads.
     fn record_downtime(&mut self, id: &str, definition: &TaskDefinition, now: DateTime<Utc>) {
+        // A One-shot has one moment, so its downtime question is simply
+        // whether that moment went by unattended.
+        if let Some(moment) = definition.schedule.one_shot_at() {
+            if moment >= now || self.state.completed_for(id) == Some(moment) {
+                return;
+            }
+            self.state.note_tick(id, moment);
+            self.state.record_skip(
+                id,
+                Skip::DaemonDown {
+                    from: moment,
+                    to: moment,
+                    count: 1,
+                    recorded_at: now,
+                    truncated: false,
+                },
+            );
+            if definition.catch_up && now - moment <= CATCH_UP_WINDOW {
+                self.catching_up.insert(id.to_string(), moment);
+            } else {
+                if let Some(task) = self.state.task_mut(id) {
+                    task.completed_for = Some(moment);
+                }
+            }
+            return;
+        }
+
         let Some(last) = self
             .state
             .last_tick_at(id)
@@ -372,6 +414,11 @@ impl Daemon {
         if let Some((from, to, count)) = missed {
             tracing::warn!(task = %id, %from, %to, count, "ticks missed while the daemon was down");
             self.state.note_tick(id, to);
+            // Asked for, and recent enough to still be what someone wanted:
+            // the most recent miss runs, the rest stay recorded.
+            if definition.catch_up && now - to <= CATCH_UP_WINDOW {
+                self.catching_up.insert(id.to_string(), to);
+            }
             self.state.record_skip(
                 id,
                 Skip::DaemonDown {
@@ -392,7 +439,7 @@ impl Daemon {
         let now = self.clock.now();
         self.running.retain(|_, handle| !handle.is_finished());
 
-        let due: Vec<(usize, DateTime<Utc>)> = self
+        let mut due: Vec<(usize, DateTime<Utc>)> = self
             .scheduled
             .iter()
             .enumerate()
@@ -401,6 +448,14 @@ impl Daemon {
                 _ => None,
             })
             .collect();
+
+        // Missed Ticks that `catch_up` earned a Run for, once each.
+        for (index, entry) in self.scheduled.iter().enumerate() {
+            if let Some(missed) = self.catching_up.get(&entry.id) {
+                due.push((index, *missed));
+            }
+        }
+        self.catching_up.clear();
 
         let mut answered_any = !due.is_empty();
 
@@ -596,11 +651,14 @@ impl Daemon {
         let capture =
             tokio::task::spawn_blocking(move || run::capture_output(reader, &log_path, cap));
 
+        let completes = self.scheduled[index].definition.schedule.one_shot_at();
         if let Some(entry) = self.state.task_mut(&task_id) {
             entry.last_run_at = Some(started_at);
             entry.last_scheduled_for = scheduled_for;
             // Running it is what makes it familiar.
             entry.last_run_digest = Some(digest);
+            // And, for a One-shot, what finishes it.
+            entry.completed_for = completes;
         }
         self.state.save(&self.state_dir)?;
 

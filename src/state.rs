@@ -69,6 +69,10 @@ pub struct TaskState {
     /// whose file no longer matches has changed since anyone exercised it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_run_digest: Option<String>,
+    /// The moment a One-shot has already answered. Editing `at:` to a new
+    /// moment makes it a Task with something left to do again.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub completed_for: Option<DateTime<Utc>>,
     /// The most recent Tick this Task answered, whether by running or by
     /// Skipping. Distinct from `last_scheduled_for`, which belongs to the
     /// last actual Run — without it, a Skipped Tick would be counted a
@@ -86,6 +90,7 @@ impl TaskState {
             last_run_at: None,
             last_scheduled_for: None,
             last_run_digest: None,
+            completed_for: None,
             last_tick_at: None,
         }
     }
@@ -178,6 +183,11 @@ impl State {
 
     fn task(&self, id: &str) -> Option<&TaskState> {
         self.scheduled_tasks.iter().find(|task| task.id == id)
+    }
+
+    /// The moment a One-shot has already answered, if any.
+    pub fn completed_for(&self, id: &str) -> Option<DateTime<Utc>> {
+        self.task(id).and_then(|task| task.completed_for)
     }
 
     /// The digest recorded when this Task last started a Run.

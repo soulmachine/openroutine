@@ -2,7 +2,7 @@
 //!
 //! The file is the complete definition — there is no second place to look.
 
-use crate::schedule::{Schedule, ScheduleError};
+use crate::schedule::{CronSchedule, Schedule};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -17,19 +17,23 @@ pub enum TaskError {
     #[error("invalid frontmatter: {0}")]
     InvalidFrontmatter(String),
     #[error(transparent)]
-    Schedule(#[from] ScheduleError),
+    Schedule(#[from] crate::schedule::ScheduleError),
 }
 
 /// Frontmatter keys the v1 schema defines but this build does not act on
 /// yet. Warned about specifically: telling someone their `disabled: true` is
 /// an "unknown key" would be a lie, and saying nothing would be worse.
-const NOT_YET_HONOURED: &[&str] = &["at", "catch_up", "disabled", "on_failure", "tz"];
+const NOT_YET_HONOURED: &[&str] = &["disabled", "on_failure", "tz"];
 
 /// The frontmatter exactly as written, before validation.
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
     description: Option<String>,
     cron: Option<String>,
+    /// A single moment, RFC 3339. Mutually exclusive with `cron`.
+    at: Option<String>,
+    #[serde(default)]
+    catch_up: bool,
     agent: Option<String>,
     /// Accepts `2m`, `30s`, or a bare `0`, so it reads naturally either way.
     jitter: Option<serde_yaml_ng::Value>,
@@ -51,6 +55,8 @@ pub struct TaskDefinition {
     pub description: String,
     pub schedule: Schedule,
     pub agent: Option<String>,
+    /// Whether a Tick missed while the Daemon was away should still run.
+    pub catch_up: bool,
     /// How far this Task's fire time may be nudged. `None` takes the default.
     pub jitter: Option<chrono::Duration>,
     /// How long the Run may take. `None` takes the configured default.
@@ -73,9 +79,26 @@ impl TaskDefinition {
         let parsed: Frontmatter = serde_yaml_ng::from_str(frontmatter)
             .map_err(|error| TaskError::InvalidFrontmatter(error.to_string()))?;
 
-        let cron = parsed
-            .cron
-            .ok_or_else(|| TaskError::InvalidFrontmatter("missing `cron`".to_string()))?;
+        let schedule = match (&parsed.cron, &parsed.at) {
+            (Some(_), Some(_)) => {
+                return Err(TaskError::InvalidFrontmatter(
+                    "`cron` and `at` are alternatives; a task has one schedule or none".to_string(),
+                ));
+            }
+            (Some(cron), None) => Schedule::Cron(Box::new(CronSchedule::parse(cron)?)),
+            (None, Some(at)) => Schedule::At(
+                chrono::DateTime::parse_from_rfc3339(at.trim())
+                    .map_err(|error| {
+                        TaskError::InvalidFrontmatter(format!(
+                            "`at`: {at:?} is not an RFC 3339 timestamp ({error})"
+                        ))
+                    })?
+                    .with_timezone(&chrono::Utc),
+            ),
+            // A Task with no schedule is a Manual one: fireable, never ticked.
+            (None, None) => Schedule::Manual,
+        };
+
         let description = parsed
             .description
             .ok_or_else(|| TaskError::InvalidFrontmatter("missing `description`".to_string()))?;
@@ -112,7 +135,8 @@ impl TaskDefinition {
 
         Ok(Self {
             description,
-            schedule: Schedule::parse(&cron)?,
+            schedule,
+            catch_up: parsed.catch_up,
             agent: parsed.agent,
             jitter,
             timeout,

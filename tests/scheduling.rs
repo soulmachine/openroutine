@@ -4,12 +4,17 @@
 use chrono::{DateTime, Duration, FixedOffset, TimeZone, Utc};
 use chrono_tz::America::Los_Angeles;
 use openroutine::jitter;
-use openroutine::schedule::Schedule;
+use openroutine::schedule::{CronSchedule, Schedule};
 
 /// A fixed +00:00 zone keeps these cases independent of the host's timezone.
 /// DST behaviour gets its own real-timezone cases in the scheduling-semantics work.
 fn utc_zone() -> FixedOffset {
     FixedOffset::east_opt(0).unwrap()
+}
+
+/// A cron Schedule, the shape the scheduler actually carries.
+fn cron(expression: &str) -> Schedule {
+    Schedule::Cron(Box::new(CronSchedule::parse(expression).unwrap()))
 }
 
 fn at(iso: &str) -> DateTime<Utc> {
@@ -20,7 +25,7 @@ fn at(iso: &str) -> DateTime<Utc> {
 
 #[test]
 fn daily_cron_fires_at_the_next_matching_wall_time() {
-    let schedule = Schedule::parse("0 2 * * *").unwrap();
+    let schedule = cron("0 2 * * *");
 
     let next = schedule
         .next_tick_after(at("2026-08-11T00:00:00Z"), &utc_zone())
@@ -31,7 +36,7 @@ fn daily_cron_fires_at_the_next_matching_wall_time() {
 
 #[test]
 fn a_tick_already_past_rolls_to_tomorrow() {
-    let schedule = Schedule::parse("0 2 * * *").unwrap();
+    let schedule = cron("0 2 * * *");
 
     let next = schedule
         .next_tick_after(at("2026-08-11T02:00:00Z"), &utc_zone())
@@ -42,7 +47,7 @@ fn a_tick_already_past_rolls_to_tomorrow() {
 
 #[test]
 fn cron_is_evaluated_in_the_given_zone_not_utc() {
-    let schedule = Schedule::parse("0 2 * * *").unwrap();
+    let schedule = cron("0 2 * * *");
     let minus_five = FixedOffset::west_opt(5 * 3600).unwrap();
 
     let next = schedule
@@ -59,7 +64,7 @@ fn cron_is_evaluated_in_the_given_zone_not_utc() {
 
 #[test]
 fn step_and_range_syntax_parses() {
-    let schedule = Schedule::parse("*/15 9-17 * * MON-FRI").unwrap();
+    let schedule = cron("*/15 9-17 * * MON-FRI");
 
     let next = schedule
         .next_tick_after(at("2026-08-11T09:02:00Z"), &utc_zone())
@@ -72,7 +77,7 @@ fn step_and_range_syntax_parses() {
 fn shorthand_aliases_parse() {
     for alias in ["@hourly", "@daily", "@weekly", "@monthly"] {
         assert!(
-            Schedule::parse(alias).is_ok(),
+            CronSchedule::parse(alias).is_ok(),
             "expected {alias} to be accepted"
         );
     }
@@ -80,7 +85,7 @@ fn shorthand_aliases_parse() {
 
 #[test]
 fn an_invalid_expression_is_rejected_with_its_reason() {
-    let err = Schedule::parse("not a cron").unwrap_err();
+    let err = CronSchedule::parse("not a cron").unwrap_err();
 
     assert!(
         err.to_string().to_lowercase().contains("cron"),
@@ -91,7 +96,7 @@ fn an_invalid_expression_is_rejected_with_its_reason() {
 #[test]
 fn seconds_resolution_is_not_accepted() {
     // Six fields would be a seconds-resolution dialect; v1 is deliberately 5-field.
-    assert!(Schedule::parse("0 0 2 * * *").is_err());
+    assert!(CronSchedule::parse("0 0 2 * * *").is_err());
 }
 
 // --- Daylight saving ---------------------------------------------------
@@ -138,7 +143,7 @@ fn daylight_saving_transitions_behave_as_documented() {
     ];
 
     for (what, expression, from, expected) in cases {
-        let schedule = Schedule::parse(expression).unwrap();
+        let schedule = cron(expression);
         let next = schedule.next_tick_after(at(from), &Los_Angeles).unwrap();
         assert_eq!(next, at(expected), "{what}");
     }
@@ -146,7 +151,7 @@ fn daylight_saving_transitions_behave_as_documented() {
 
 #[test]
 fn a_wall_time_repeated_by_fall_back_fires_only_once() {
-    let schedule = Schedule::parse("0 1 * * *").unwrap();
+    let schedule = cron("0 1 * * *");
 
     // 01:00 occurs twice on 2026-11-01 in Los Angeles: 08:00 UTC in PDT and
     // 09:00 UTC in PST. Exactly one of them is a Tick.
@@ -235,7 +240,7 @@ fn the_window_never_exceeds_half_the_interval() {
 
 #[test]
 fn a_tick_exactly_now_is_available_to_an_inclusive_search() {
-    let schedule = Schedule::parse("0 2 * * *").unwrap();
+    let schedule = cron("0 2 * * *");
     let exactly = at("2026-08-11T02:00:00Z");
 
     assert_eq!(

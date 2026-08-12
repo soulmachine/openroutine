@@ -13,13 +13,87 @@ pub enum ScheduleError {
     InvalidCron { expression: String, reason: String },
 }
 
+/// When a Task comes due.
 #[derive(Debug, Clone)]
-pub struct Schedule {
+pub enum Schedule {
+    /// Repeats on a crontab expression. Boxed because a parsed cron is far
+    /// larger than a timestamp, and most Tasks carry the schedule around by
+    /// value.
+    Cron(Box<CronSchedule>),
+    /// Happens once, at a stated moment.
+    At(DateTime<Utc>),
+    /// Never on its own — only when Fired.
+    Manual,
+}
+
+impl Schedule {
+    /// How this schedule reads in a listing.
+    pub fn expression(&self) -> String {
+        match self {
+            Schedule::Cron(cron) => cron.expression.clone(),
+            Schedule::At(when) => when.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            Schedule::Manual => "no schedule".to_string(),
+        }
+    }
+
+    /// The first Tick strictly after `after`.
+    pub fn next_tick_after<Tz: TimeZone>(
+        &self,
+        after: DateTime<Utc>,
+        zone: &Tz,
+    ) -> Option<DateTime<Utc>> {
+        match self {
+            Schedule::Cron(cron) => cron.find(after, zone, false),
+            Schedule::At(when) => (*when > after).then_some(*when),
+            Schedule::Manual => None,
+        }
+    }
+
+    /// The first Tick at or after `at`.
+    pub fn next_tick_at_or_after<Tz: TimeZone>(
+        &self,
+        at: DateTime<Utc>,
+        zone: &Tz,
+    ) -> Option<DateTime<Utc>> {
+        match self {
+            Schedule::Cron(cron) => cron.find(at, zone, true),
+            Schedule::At(when) => (*when >= at).then_some(*when),
+            Schedule::Manual => None,
+        }
+    }
+
+    /// The gap from `tick` to the Tick after it, if there is one.
+    pub fn interval_after<Tz: TimeZone>(
+        &self,
+        tick: DateTime<Utc>,
+        zone: &Tz,
+    ) -> Option<chrono::Duration> {
+        self.next_tick_after(tick, zone)
+            .map(|following| following - tick)
+    }
+
+    /// Whether this Task ever comes due on its own.
+    pub fn is_manual(&self) -> bool {
+        matches!(self, Schedule::Manual)
+    }
+
+    /// The moment a One-shot is waiting for.
+    pub fn one_shot_at(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Schedule::At(when) => Some(*when),
+            _ => None,
+        }
+    }
+}
+
+/// A parsed crontab expression.
+#[derive(Debug, Clone)]
+pub struct CronSchedule {
     expression: String,
     cron: Cron,
 }
 
-impl Schedule {
+impl CronSchedule {
     pub fn parse(expression: &str) -> Result<Self, ScheduleError> {
         let expression = expression.trim();
 
@@ -38,41 +112,6 @@ impl Schedule {
             expression: expression.to_string(),
             cron,
         })
-    }
-
-    /// The expression exactly as the task file wrote it.
-    pub fn expression(&self) -> &str {
-        &self.expression
-    }
-
-    /// The first Tick strictly after `after`, evaluated in `zone`.
-    pub fn next_tick_after<Tz: TimeZone>(
-        &self,
-        after: DateTime<Utc>,
-        zone: &Tz,
-    ) -> Option<DateTime<Utc>> {
-        self.find(after, zone, false)
-    }
-
-    /// The first Tick at or after `at`. Used when reloading, so a Tick due at
-    /// exactly that instant is not silently stepped over.
-    pub fn next_tick_at_or_after<Tz: TimeZone>(
-        &self,
-        at: DateTime<Utc>,
-        zone: &Tz,
-    ) -> Option<DateTime<Utc>> {
-        self.find(at, zone, true)
-    }
-
-    /// The gap from `tick` to the Tick after it — the spacing jitter is
-    /// allowed to nudge within.
-    pub fn interval_after<Tz: TimeZone>(
-        &self,
-        tick: DateTime<Utc>,
-        zone: &Tz,
-    ) -> Option<chrono::Duration> {
-        self.next_tick_after(tick, zone)
-            .map(|following| following - tick)
     }
 
     fn find<Tz: TimeZone>(

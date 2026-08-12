@@ -49,8 +49,12 @@ A Task scheduled by a single future timestamp (`at`) instead of a recurrence. It
 _Avoid_: one-off, one-time task
 
 **Completed**:
-The state of a One-shot Task after its single fire (or after its time passed unrun). Machine state only — the file is untouched, and editing the timestamp re-arms the Task.
+The state of a One-shot Task that has answered its moment — by running, or by having the moment pass unattended without `catch_up`. Machine state only: the file is untouched, and editing the timestamp gives the Task something to do again.
 _Avoid_: done, finished, expired
+
+**Catch-up**:
+Opting a Task into running one Tick it missed while the Daemon was away, if that Tick is recent enough to still be wanted. Off by default; the rest of the missed Ticks stay recorded as Skips either way.
+_Avoid_: backfill, replay
 
 **Disabled**:
 A Task switched off in its own definition (frontmatter). Part of the reviewable, diffable file.
