@@ -26,7 +26,8 @@ Review all open TODO and FIXME comments.
 async fn daemon_at(env: &TestEnv, now: &str) -> (Daemon, ManualClock) {
     let clock = ManualClock::new(at(now));
     let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
-        .expect("daemon should build");
+        .expect("daemon should build")
+        .watching_config(env.config_path());
     daemon.reload().await.expect("reload should succeed");
     (daemon, clock)
 }
@@ -80,8 +81,8 @@ async fn the_run_is_recorded_with_its_outcome_and_timings() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let run = env.read_run("proj/todo-digest", 0);
-    assert_eq!(run["taskId"], "proj/todo-digest");
+    let run = env.read_run("todo-digest", 0);
+    assert_eq!(run["taskId"], "todo-digest");
     assert_eq!(run["status"], "succeeded");
     assert_eq!(run["exitCode"], 0);
     assert_eq!(run["trigger"], "schedule");
@@ -110,10 +111,10 @@ async fn the_log_carries_a_header_then_the_agents_merged_output() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let log = env.read_run_log("proj/todo-digest", 0);
+    let log = env.read_run_log("todo-digest", 0);
     let (header, output) = log.split_once("\n---\n").expect("header then output");
 
-    assert!(header.contains("proj/todo-digest"), "header names the task");
+    assert!(header.contains("todo-digest"), "header names the task");
     assert!(
         header.contains("2026-08-11T02:00:00Z"),
         "header carries times"
@@ -136,7 +137,7 @@ async fn state_records_the_task_and_its_latest_run() {
 
     let state = env.read_state();
     let entry = &state["scheduledTasks"][0];
-    assert_eq!(entry["id"], "proj/todo-digest");
+    assert_eq!(entry["id"], "todo-digest");
     assert_eq!(
         entry["filePath"],
         task_path.canonicalize().unwrap().display().to_string(),
@@ -165,7 +166,7 @@ async fn a_run_is_recorded_before_the_agent_finishes_and_never_blocks_the_schedu
     // Run must never stall the Daemon or hide from anyone reading the disk.
     assert_eq!(daemon.running_count(), 1);
     assert_eq!(
-        env.read_run("proj/todo-digest", 0)["status"],
+        env.read_run("todo-digest", 0)["status"],
         "running",
         "an in-flight Run is on disk with its status, not invisible until it ends"
     );
@@ -173,7 +174,7 @@ async fn a_run_is_recorded_before_the_agent_finishes_and_never_blocks_the_schedu
     env.open_gate();
     daemon.wait_for_running().await;
 
-    assert_eq!(env.read_run("proj/todo-digest", 0)["status"], "succeeded");
+    assert_eq!(env.read_run("todo-digest", 0)["status"], "succeeded");
     assert_eq!(daemon.running_count(), 0);
 }
 
@@ -209,11 +210,11 @@ async fn a_failing_agent_is_recorded_as_failed_with_its_exit_code() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let run = env.read_run("proj/todo-digest", 0);
+    let run = env.read_run("todo-digest", 0);
     assert_eq!(run["status"], "failed");
     assert_eq!(run["exitCode"], 3);
     assert!(
-        env.read_run_log("proj/todo-digest", 0)
+        env.read_run_log("todo-digest", 0)
             .contains("stub agent ran"),
         "a failed Run still keeps its log"
     );
@@ -416,9 +417,9 @@ async fn each_tick_produces_its_own_run() {
     }
 
     assert_eq!(env.calls().len(), 2);
-    assert_eq!(env.run_dirs("proj/hourly").len(), 2, "one run dir per Run");
+    assert_eq!(env.run_dirs("hourly").len(), 2, "one run dir per Run");
     assert_eq!(
-        env.read_run("proj/hourly", 1)["scheduledFor"],
+        env.read_run("hourly", 1)["scheduledFor"],
         "2026-08-11T02:00:00Z"
     );
 }
@@ -465,7 +466,7 @@ async fn the_run_records_the_tick_it_answers_and_the_moment_it_actually_started(
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let run = env.read_run("proj/spread", 0);
+    let run = env.read_run("spread", 0);
     assert_eq!(
         run["scheduledFor"], "2026-08-11T01:00:00Z",
         "the Tick is the schedule's instant, unjittered"
@@ -515,7 +516,7 @@ async fn a_tick_arriving_mid_run_is_skipped_and_recorded_as_overlap() {
         1,
         "a Task never runs concurrently with itself"
     );
-    let skips = env.read_state()["recordedSkips"]["proj/slow"].clone();
+    let skips = env.read_state()["recordedSkips"]["slow"].clone();
     assert_eq!(skips[0]["reason"], "overlap");
     assert_eq!(skips[0]["scheduledFor"], "2026-08-11T02:00:00Z");
 }
@@ -539,7 +540,7 @@ async fn downtime_collapses_into_one_skip_carrying_the_window_and_the_count() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let skips = env.read_state()["recordedSkips"]["proj/hourly"].clone();
+    let skips = env.read_state()["recordedSkips"]["hourly"].clone();
     assert_eq!(
         skips.as_array().map(Vec::len),
         Some(1),
@@ -577,7 +578,7 @@ async fn skip_records_are_capped_and_the_newest_survive() {
     daemon.wait_for_running().await;
 
     let state = env.read_state();
-    let skips = state["recordedSkips"]["proj/minutely"].as_array().unwrap();
+    let skips = state["recordedSkips"]["minutely"].as_array().unwrap();
     assert_eq!(skips.len(), 50, "capped");
     assert_eq!(
         skips.last().unwrap()["scheduledFor"],
@@ -601,7 +602,7 @@ async fn a_tick_due_at_the_reload_instant_still_fires() {
 
     assert_eq!(env.calls().len(), 1);
     assert_eq!(
-        env.read_run("proj/punctual", 0)["scheduledFor"],
+        env.read_run("punctual", 0)["scheduledFor"],
         "2026-08-11T01:00:00Z"
     );
 }
@@ -647,7 +648,7 @@ async fn ticks_the_scheduler_reached_late_are_recorded_not_dropped() {
         2,
         "one Run for the Tick it reached — no catch-up storm"
     );
-    let skips = env.read_state()["recordedSkips"]["proj/hourly"].clone();
+    let skips = env.read_state()["recordedSkips"]["hourly"].clone();
     assert_eq!(skips[0]["reason"], "missed");
     assert_eq!(skips[0]["from"], "2026-08-11T03:00:00Z");
     assert_eq!(skips[0]["to"], "2026-08-11T05:00:00Z");
@@ -676,7 +677,7 @@ async fn reloading_inside_the_jitter_window_keeps_the_pending_tick() {
 
     assert_eq!(env.calls().len(), 1, "the pending Tick still fired");
     assert_eq!(
-        env.read_run("proj/spread", 0)["scheduledFor"],
+        env.read_run("spread", 0)["scheduledFor"],
         "2026-08-11T01:00:00Z"
     );
 }
@@ -702,7 +703,7 @@ async fn a_tick_answered_by_a_skip_is_not_counted_again_as_downtime() {
     daemon.tick().await.unwrap();
 
     let state = env.read_state();
-    let skips = state["recordedSkips"]["proj/slow"].as_array().unwrap();
+    let skips = state["recordedSkips"]["slow"].as_array().unwrap();
     let downtime: Vec<_> = skips
         .iter()
         .filter(|skip| skip["reason"] == "daemon-down")
@@ -722,20 +723,20 @@ async fn a_paused_task_does_not_fire_but_its_ticks_are_still_accounted_for() {
     env.write_config();
 
     let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
-    daemon.set_paused(Some("proj/hourly"), true).unwrap();
+    daemon.set_paused(Some("hourly"), true).unwrap();
 
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
     assert!(env.calls().is_empty(), "held, so it did not run");
-    let skips = env.read_state()["recordedSkips"]["proj/hourly"].clone();
+    let skips = env.read_state()["recordedSkips"]["hourly"].clone();
     assert_eq!(
         skips[0]["reason"], "paused",
         "and the Tick is answered rather than lost: {skips}"
     );
 
-    daemon.set_paused(Some("proj/hourly"), false).unwrap();
+    daemon.set_paused(Some("hourly"), false).unwrap();
     clock.set(at("2026-08-11T02:00:00Z"));
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
@@ -750,7 +751,7 @@ async fn a_skip_behind_a_run_in_the_same_pass_is_not_lost() {
     env.write_config();
 
     let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
-    daemon.set_paused(Some("proj/zzz-held"), true).unwrap();
+    daemon.set_paused(Some("zzz-held"), true).unwrap();
 
     // Both come due in one pass: the first starts a Run, the second is held.
     clock.set(at("2026-08-11T01:00:00Z"));
@@ -758,7 +759,7 @@ async fn a_skip_behind_a_run_in_the_same_pass_is_not_lost() {
     daemon.wait_for_running().await;
 
     assert_eq!(env.calls().len(), 1, "the first one ran");
-    let skips = env.read_state()["recordedSkips"]["proj/zzz-held"].clone();
+    let skips = env.read_state()["recordedSkips"]["zzz-held"].clone();
     assert_eq!(
         skips[0]["reason"], "paused",
         "and the Tick behind it was still recorded — a Run starting must not \
@@ -781,7 +782,7 @@ async fn a_concurrency_cap_delays_a_tick_rather_than_dropping_it() {
     assert_eq!(daemon.running_count(), 1, "only one slot, so only one Run");
     let state = env.read_state();
     assert!(
-        state["recordedSkips"]["proj/second"].is_null(),
+        state["recordedSkips"]["second"].is_null(),
         "the one that waited was not skipped — it is delayed: {state}"
     );
 
@@ -793,7 +794,7 @@ async fn a_concurrency_cap_delays_a_tick_rather_than_dropping_it() {
 
     assert_eq!(env.calls().len(), 2, "both ran, one after the other");
     assert_eq!(
-        env.read_run("proj/second", 0)["scheduledFor"],
+        env.read_run("second", 0)["scheduledFor"],
         "2026-08-11T01:00:00Z",
         "and it records the Tick it answered, however late it started"
     );

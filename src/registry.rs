@@ -1,30 +1,39 @@
-//! Finding Task files inside a Project, and deciding whether each one is
-//! usable.
+//! The registered Task files, and whether each one is usable.
 //!
-//! A Task's identity is `<project>/<filename stem>` — the file is the
-//! definition, so moving or renaming it makes a different Task. A file that
-//! fails to parse or validate becomes **Broken**: still listed, never fired.
-//! Nothing here is ever silently skipped.
+//! Nothing is discovered here: the config names every Task file, one path at
+//! a time, and this module reads exactly those. A Task's identity is the id
+//! derived from the `name` in its own frontmatter, so moving or renaming the
+//! file changes nothing. A file that is missing, unreadable, or fails to
+//! validate becomes **Broken**: still listed, never fired. Nothing is ever
+//! silently skipped.
 
-use crate::config::{Config, ProjectConfig};
+use crate::config::Config;
 use crate::task::TaskDefinition;
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-pub const TASK_SUFFIX: &str = ".cron.md";
 /// Stands in for the digest of a file we could not read, so an unreadable
 /// Task is never mistaken for an unchanged one.
 const UNREADABLE: &str = "unreadable";
 
 #[derive(Debug, Clone)]
-pub struct ScannedTask {
+pub struct RegisteredTask {
     pub id: String,
     pub path: PathBuf,
-    pub project: String,
-    pub project_dir: PathBuf,
+    /// The directory holding the file: what a relative `cwd:` resolves
+    /// against, and the working directory when the file names none.
+    pub dir: PathBuf,
     pub health: TaskHealth,
     /// A digest of the file as it is right now, for noticing changes.
     pub digest: String,
+    /// When the file was last written, as the filesystem reports it. A cheap
+    /// pre-filter for a Refresh: unchanged mtime means the file need not be
+    /// read at all. Absent when it could not be read.
+    pub mtime: Option<std::time::SystemTime>,
+    /// Set when this file lost a name collision: an earlier registration
+    /// already answers to `id`. Broken like any other unusable Task, but
+    /// distinct from one broken on its own merits — the run history and
+    /// state filed under that name belong to the winner, not to this file.
+    pub duplicate: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -34,15 +43,15 @@ pub enum TaskHealth {
         definition: Box<TaskDefinition>,
         agent: String,
     },
-    /// The file exists but can't be used. Carries the reason, verbatim, plus
-    /// whatever description survived so the Task can still be named.
+    /// Registered but unusable. Carries the reason, verbatim, plus whatever
+    /// description survived so the Task can still be described.
     Broken {
         error: String,
         description: Option<String>,
     },
 }
 
-impl ScannedTask {
+impl RegisteredTask {
     pub fn is_broken(&self) -> bool {
         matches!(self.health, TaskHealth::Broken { .. })
     }
@@ -86,8 +95,8 @@ impl ScannedTask {
 
 /// Whether a Task is one anybody has exercised in its current form.
 ///
-/// Registering a Project means trusting whoever can commit to it, so a Task
-/// arriving or changing is never blocked — but it is never quiet either.
+/// Registering a file means trusting whoever can edit it, so a Task arriving
+/// or changing is never blocked — but it is never quiet either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Novelty {
     /// No Run has ever started for this Task.
@@ -110,71 +119,76 @@ impl Novelty {
     }
 }
 
-/// Everything one pass over the Projects found.
-#[derive(Debug, Default)]
-pub struct Scan {
-    pub tasks: Vec<ScannedTask>,
-    /// Projects whose directory was readable this pass. A Task missing from
-    /// one of these is genuinely gone; a Task under any other Project is
-    /// merely out of reach, which is not the same thing.
-    pub reachable_projects: BTreeSet<String>,
-}
+/// Reads every registered Task file.
+///
+/// Config order decides a name collision — the first file to claim a name
+/// keeps it — so the list is built in that order and sorted afterwards.
+pub fn load_all(config: &Config) -> Vec<RegisteredTask> {
+    let mut tasks: Vec<RegisteredTask> = Vec::new();
 
-/// Scans every registered Project.
-pub fn scan_all(config: &Config) -> Scan {
-    let mut scan = Scan::default();
-    for project in &config.projects {
-        let name = project.resolved_name();
-        // Listable, not merely present: a directory can be stat-able while
-        // its contents are unreadable, and finding no Tasks there is not the
-        // same as there being none.
-        if std::fs::read_dir(&project.path).is_ok() {
-            scan.reachable_projects.insert(name);
+    for path in &config.tasks {
+        let mut task = load_one(path, config);
+
+        if let Some(other) = tasks.iter().find(|earlier| earlier.id == task.id) {
+            // Two files answering to one name would make every command
+            // ambiguous. The earlier registration keeps the name; the later
+            // file stays registered, and says why it cannot run.
+            let error = format!(
+                "the id {:?} is already taken by {}; give this one a different `name`",
+                task.id,
+                other.path.display()
+            );
+            let description = task.description().map(str::to_string);
+            task.health = TaskHealth::Broken { error, description };
+            task.duplicate = true;
         }
-        scan.tasks.extend(scan_project(project, config));
+        tasks.push(task);
     }
-    scan.tasks.sort_by(|a, b| a.id.cmp(&b.id));
-    scan
+
+    tasks.sort_by(|a, b| (&a.id, &a.path).cmp(&(&b.id, &b.path)));
+    tasks
 }
 
-/// Scans one Project, reporting every Task file it contains.
-pub fn scan_project(project: &ProjectConfig, config: &Config) -> Vec<ScannedTask> {
-    let project_name = project.resolved_name();
-    let project_dir = project
-        .path
-        .canonicalize()
-        .unwrap_or_else(|_| project.path.clone());
+/// Reads and validates one Task file.
+///
+/// Digest and health come from a single read: reading twice could digest one
+/// edit while assessing another, and the change would never be flagged.
+pub fn load_one(path: &Path, config: &Config) -> RegisteredTask {
+    // Resolved once, here: everything downstream — state, `cwd`, the paths a
+    // user is shown — should name the real file rather than however the
+    // config happened to spell it.
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let dir = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
 
-    let mut files = Vec::new();
-    collect_task_files(&project_dir, &mut files);
-    files.sort();
-
-    files
-        .into_iter()
-        .filter_map(|path| {
-            let name = task_name(&path)?;
-            let (digest, health) = assess(&path, &project_dir, config);
-            Some(ScannedTask {
-                id: format!("{project_name}/{name}"),
-                health,
-                digest,
-                path,
-                project: project_name.clone(),
-                project_dir: project_dir.clone(),
-            })
-        })
-        .collect()
+    let mtime = std::fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .ok();
+    let (digest, id, health) = assess(&path, &dir, config);
+    RegisteredTask {
+        id,
+        path,
+        dir,
+        health,
+        digest,
+        mtime,
+        // Only `load_all` can see a collision: one file alone never has one.
+        duplicate: false,
+    }
 }
 
-/// Reads and validates one Task file, returning its digest and its health
-/// from a single read — reading twice could digest one edit while assessing
-/// another, and the change would never be flagged.
-fn assess(path: &Path, project_dir: &Path, config: &Config) -> (String, TaskHealth) {
+/// The digest, the identity, and the health of one file.
+fn assess(path: &Path, dir: &Path, config: &Config) -> (String, String, TaskHealth) {
+    // A registered file that isn't there is Broken, not gone: unregistering
+    // is something the user does, never something a missing file does.
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
         Err(error) => {
             return (
                 UNREADABLE.to_string(),
+                fallback_id(path),
                 TaskHealth::Broken {
                     error: format!("cannot read the task file: {error}"),
                     description: None,
@@ -184,9 +198,14 @@ fn assess(path: &Path, project_dir: &Path, config: &Config) -> (String, TaskHeal
     };
     let digest = crate::digest::of(source.as_bytes());
 
+    // A file too broken to state a usable name still needs an id to be
+    // listed and addressed by; the filename is the last resort.
+    let id = TaskDefinition::peek_id(&source).unwrap_or_else(|| fallback_id(path));
+
     let broken = |error: String| {
         (
             digest.clone(),
+            id.clone(),
             TaskHealth::Broken {
                 error,
                 description: TaskDefinition::peek_description(&source),
@@ -200,26 +219,15 @@ fn assess(path: &Path, project_dir: &Path, config: &Config) -> (String, TaskHeal
     };
 
     // A working directory that isn't there would fail at fire time, so it is
-    // caught here like any other unusable definition.
-    if let Some(cwd) = &definition.cwd {
-        let candidate = Path::new(cwd);
-        // "Relative to the Project root" is the whole contract; an absolute
-        // path or a `..` climb would put the Agent somewhere the Project does
-        // not own.
-        if candidate.is_absolute()
-            || candidate
-                .components()
-                .any(|part| matches!(part, std::path::Component::ParentDir))
-        {
-            return broken(format!(
-                "working directory {cwd:?} must be relative to the project and stay inside it"
-            ));
-        }
-        if !project_dir.join(candidate).is_dir() {
-            return broken(format!(
-                "working directory {cwd:?} does not exist under the project"
-            ));
-        }
+    // caught here like any other unusable definition. Absolute is allowed:
+    // registering a file is the trust decision, and a Task is entitled to
+    // work wherever its author pointed it.
+    let working_dir = definition.working_dir(dir);
+    if !working_dir.is_dir() {
+        return broken(format!(
+            "working directory {} does not exist",
+            working_dir.display()
+        ));
     }
 
     let agent = match config.resolve_agent(definition.agent.as_deref()) {
@@ -289,6 +297,7 @@ fn assess(path: &Path, project_dir: &Path, config: &Config) -> (String, TaskHeal
 
     (
         digest,
+        id,
         TaskHealth::Ready {
             definition: Box::new(definition),
             agent,
@@ -296,48 +305,23 @@ fn assess(path: &Path, project_dir: &Path, config: &Config) -> (String, TaskHeal
     )
 }
 
-/// The Task's name: the filename with the `.cron.md` suffix removed.
-fn task_name(path: &Path) -> Option<String> {
-    path.file_name()?
-        .to_str()?
-        .strip_suffix(TASK_SUFFIX)
-        .map(str::to_string)
-}
+/// The identity of a file that cannot state its own: the filename, with any
+/// extension dropped, put through the same derivation a name gets. Enough to
+/// list the Task and address it while it is being fixed.
+fn fallback_id(path: &Path) -> String {
+    let stem = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.split('.').next().unwrap_or(name))
+        .unwrap_or_default();
 
-/// Walks a Project for Task files.
-///
-/// Uses the same rules a developer already expects from their tools: what
-/// `.gitignore` excludes is not a Task, `.git` is never searched, and a
-/// symlink is not followed — a link is not a reason to schedule a file the
-/// Project does not contain.
-fn collect_task_files(dir: &Path, found: &mut Vec<PathBuf>) {
-    let walker = ignore::WalkBuilder::new(dir)
-        .follow_links(false)
-        .hidden(false)
-        .git_ignore(true)
-        .git_global(false)
-        .git_exclude(true)
-        .require_git(false)
-        .parents(false)
-        .filter_entry(|entry| entry.file_name() != ".git")
-        .build();
-
-    for entry in walker {
-        match entry {
-            Ok(entry) => {
-                let is_file = entry.file_type().is_some_and(|kind| kind.is_file());
-                if is_file
-                    && entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|name| name.ends_with(TASK_SUFFIX))
-                {
-                    found.push(entry.into_path());
-                }
-            }
-            // Tasks under something unreadable would otherwise vanish from
-            // every listing without explanation.
-            Err(error) => tracing::warn!(dir = %dir.display(), "cannot scan for tasks: {error}"),
-        }
-    }
+    // A filename can hold characters a name never would, so it goes through
+    // the same conversion — and when even that yields nothing usable, the
+    // Task still needs to be called something.
+    crate::task::slugify(stem)
+        .ok()
+        .map(|id| id.chars().take(50).collect::<String>())
+        .map(|id| id.trim_end_matches(['-', '_']).to_string())
+        .filter(|id| id.chars().count() >= 2)
+        .unwrap_or_else(|| "unnamed".to_string())
 }

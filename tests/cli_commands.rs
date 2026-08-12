@@ -20,24 +20,29 @@ Review all open TODO and FIXME comments.
 fn init_produces_a_setup_that_works_immediately() {
     let env = TestEnv::new();
 
-    let out = env.run_ok(&["init", env.project_dir().to_str().unwrap()]);
+    let out = env.run_ok(&["init"]);
 
     assert!(out.contains("config"), "it should say what it made: {out}");
     assert!(env.config_path().exists(), "a config");
-    let sample: Vec<_> = std::fs::read_dir(env.project_dir())
-        .unwrap()
-        .filter_map(|entry| {
-            let name = entry.unwrap().file_name().to_string_lossy().to_string();
-            name.ends_with(".cron.md").then_some(name)
-        })
-        .collect();
-    assert_eq!(sample.len(), 1, "and a task to look at: {sample:?}");
+    assert!(
+        std::fs::read_dir(env.project_dir()).unwrap().count() == 0,
+        "init registers nothing and writes no task anywhere: that is `add`'s job"
+    );
 
-    // The whole point: what it wrote is usable without editing anything.
+    // The sample it prints is the thing a new user copies, so it has to be a
+    // task that actually registers.
+    let sample = out
+        .split_once("---\n")
+        .map(|(_, rest)| format!("---\n{}", rest.split("\nThen:").next().unwrap_or("")))
+        .expect("init should print a sample task");
+    let file = env.path().join("hello.md");
+    std::fs::write(&file, sample).unwrap();
+
+    env.run_ok(&["add", file.to_str().unwrap()]);
     let listed = env.run_ok(&["list"]);
     assert!(
         !listed.to_lowercase().contains("broken"),
-        "the sample task must be usable as written:\n{listed}"
+        "the printed sample must be usable as written:\n{listed}"
     );
 }
 
@@ -47,7 +52,7 @@ fn init_does_not_overwrite_an_existing_config() {
     env.write_config();
     let before = std::fs::read_to_string(env.config_path()).unwrap();
 
-    let output = env.run(&["init", env.project_dir().to_str().unwrap()]);
+    let output = env.run(&["init"]);
 
     assert!(
         !output.status.success(),
@@ -96,16 +101,17 @@ async fn logs_prints_the_latest_run() {
         std::sync::Arc::new(clock.clone()),
         chrono_tz::UTC,
     )
-    .unwrap();
+    .unwrap()
+    .watching_config(env.config_path());
     daemon.reload().await.unwrap();
     clock.set(support::at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let out = env.run_ok(&["logs", "proj/hourly"]);
+    let out = env.run_ok(&["logs", "hourly"]);
 
     assert!(out.contains("stub agent ran"), "{out}");
-    assert!(out.contains("proj/hourly"), "the header comes too: {out}");
+    assert!(out.contains("hourly"), "the header comes too: {out}");
 }
 
 #[test]
@@ -114,7 +120,7 @@ fn logs_for_a_task_that_never_ran_says_so() {
     env.write_task("nightly", NIGHTLY);
     env.write_config();
 
-    let out = env.run_ok(&["logs", "proj/nightly"]);
+    let out = env.run_ok(&["logs", "nightly"]);
 
     assert!(out.to_lowercase().contains("no runs"), "{out}");
 }
@@ -129,23 +135,36 @@ fn a_bare_task_name_works_when_it_is_unambiguous() {
 
     let out = env.run_ok(&["run", "nightly", "--dry-run"]);
 
-    assert!(out.contains("proj/nightly"), "{out}");
+    assert!(out.contains("nightly"), "{out}");
 }
 
 #[test]
-fn an_ambiguous_bare_name_lists_the_candidates() {
+fn a_second_file_claiming_a_taken_name_is_broken_and_the_first_keeps_it() {
     let env = TestEnv::new();
-    let other = env.add_project("other");
-    env.write_task("nightly", NIGHTLY);
-    std::fs::write(other.join("nightly.cron.md"), NIGHTLY).unwrap();
-    env.write_config_with_projects();
+    let first = env.write_task("nightly", NIGHTLY);
+    // Same `name:`, different file: registration order decides.
+    let second = env.write_unregistered_task("later", NIGHTLY);
+    std::fs::write(&second, std::fs::read_to_string(&first).unwrap()).unwrap();
+    env.register(&second);
+    env.write_config();
 
-    let output = env.run(&["run", "nightly", "--dry-run"]);
+    let out = env.run_ok(&["list"]);
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("proj/nightly"), "{stderr}");
-    assert!(stderr.contains("other/nightly"), "{stderr}");
+    assert!(
+        out.contains("broken") && out.contains("already taken"),
+        "the later file should say whose name it wanted:\n{out}"
+    );
+    // The name still resolves — to the file that claimed it first, which is
+    // still usable rather than broken.
+    let dry = env.run_ok(&["run", "nightly", "--dry-run"]);
+    assert!(
+        dry.contains("Nightly TODO/FIXME triage"),
+        "the first file keeps the name:\n{dry}"
+    );
+    let _ = &first;
+    // And the loser is still reachable by path, which is how it gets fixed.
+    let by_path = env.run_ok(&["remove", &second.display().to_string()]);
+    assert!(by_path.contains("Unregistered"), "{by_path}");
 }
 
 #[test]
@@ -198,17 +217,14 @@ fn a_dry_run_shows_where_and_under_what_limits_it_would_run() {
     std::fs::create_dir_all(env.project_dir().join("sub")).unwrap();
     env.write_task(
         "nightly",
-        "---\ndescription: Nightly\ncron: \"0 2 * * *\"\nagent: stub\ncwd: sub\ntimeout: 30m\nenv:\n  API_TOKEN: secret-value\n---\n\nping\n",
+        "---\ndescription: Nightly\ncron: \"0 2 * * *\"\nagent: stub\ncwd: sub\nenv:\n  API_TOKEN: secret-value\n---\n\nping\n",
     );
     env.write_config();
 
     let out = env.run_ok(&["run", "nightly", "--dry-run"]);
 
     assert!(out.contains("sub"), "the working directory: {out}");
-    assert!(
-        out.contains("30m") || out.contains("1800"),
-        "the timeout: {out}"
-    );
+    assert!(out.contains("15m"), "the machine-wide idle timeout: {out}");
     assert!(out.contains("API_TOKEN"), "which env it sets: {out}");
     assert!(
         !out.contains("secret-value"),
@@ -236,8 +252,9 @@ fn a_dry_run_predicts_when_each_kind_of_task_would_next_fire() {
     let once = env.run_ok(&["run", "once", "--dry-run"]);
     assert!(once.contains("2026-12-25"), "{once}");
 
-    let manual = env.run_ok(&["run", "ondemand", "--dry-run"]);
-    assert!(manual.to_lowercase().contains("no schedule"), "{manual}");
+    // No cron and no at: it runs once, when the daemon takes it in.
+    let asap = env.run_ok(&["run", "ondemand", "--dry-run"]);
+    assert!(asap.to_lowercase().contains("once"), "{asap}");
 }
 
 #[test]
@@ -297,7 +314,7 @@ fn install_print_writes_nothing_at_all() {
 fn init_points_at_the_daemon_too() {
     let env = TestEnv::new();
 
-    let out = env.run_ok(&["init", env.project_dir().to_str().unwrap()]);
+    let out = env.run_ok(&["init"]);
 
     assert!(
         out.contains("serve"),

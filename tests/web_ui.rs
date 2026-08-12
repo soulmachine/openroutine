@@ -9,7 +9,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use support::{DaemonProcess, TestEnv};
 
-const MANUAL: &str = "---\ndescription: On demand\nagent: stub\n---\n\nping\n";
+// A schedule far enough out that nothing fires on its own during a
+// test: these are about firing on demand, not about the clock.
+const MANUAL: &str = "---\ndescription: On demand\ncron: \"0 4 1 1 *\"\nagent: stub\n---\n\nping\n";
 
 struct Served {
     /// Held for its Drop: the daemon is reaped even if a test panics.
@@ -184,7 +186,7 @@ fn the_session_cookie_is_accepted_by_the_api() {
     ])
     .unwrap();
 
-    assert!(body.contains("proj/ondemand"), "{body}");
+    assert!(body.contains("ondemand"), "{body}");
 }
 
 #[test]
@@ -196,7 +198,7 @@ fn a_page_with_no_session_gets_nothing() {
     let body = raw(&["-s", &format!("{}/v1/tasks", ui.base)]).unwrap();
 
     assert!(body.contains("unauthorized"), "{body}");
-    assert!(!body.contains("proj/ondemand"), "{body}");
+    assert!(!body.contains("ondemand"), "{body}");
 }
 
 #[test]
@@ -224,14 +226,14 @@ fn the_task_list_carries_what_the_page_needs_to_show() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|task| task["id"] == "proj/once")
+        .find(|task| task["id"] == "once")
         .unwrap();
 
     assert_eq!(once["oneShot"], true, "so the page can show a countdown");
     assert!(once["description"].is_string(), "{once}");
     assert!(once["schedule"].is_string(), "{once}");
     assert!(
-        once["path"].as_str().unwrap().ends_with("once.cron.md"),
+        once["path"].as_str().unwrap().ends_with("once.md"),
         "the page shows the file to edit rather than an editor: {once}"
     );
 }

@@ -51,6 +51,17 @@ pub enum Skip {
         count: usize,
         recorded_at: DateTime<Utc>,
     },
+    /// The Task's own file changed between the Tick being planned and the
+    /// moment it would have run, into something that cannot answer it: a
+    /// definition that no longer parses, one switched off, one that renamed
+    /// itself, or a One-shot whose moment moved before it arrived.
+    #[serde(rename_all = "camelCase")]
+    DefinitionChanged {
+        scheduled_for: DateTime<Utc>,
+        recorded_at: DateTime<Utc>,
+        /// Which of those it was, in the words the log used.
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -70,6 +81,10 @@ pub struct State {
 pub struct TaskState {
     pub id: String,
     pub file_path: String,
+    /// Where this Task's Runs start, resolved: the file's own directory, or
+    /// whatever its `cwd:` came to. Always concrete, never as written.
+    #[serde(default)]
+    pub cwd: String,
     /// Held at runtime. Distinct from `disabled:` in the file, which travels
     /// with the repository: a disabled Task is not scheduled at all, while a
     /// paused one keeps its schedule and records a Skip per Tick.
@@ -96,10 +111,11 @@ pub struct TaskState {
 }
 
 impl TaskState {
-    pub fn new(id: String, file_path: String) -> Self {
+    pub fn new(id: String, file_path: String, cwd: String) -> Self {
         Self {
             id,
             file_path,
+            cwd,
             paused: false,
             last_run_at: None,
             last_scheduled_for: None,
@@ -231,25 +247,16 @@ impl State {
             .and_then(|task| task.last_run_digest.as_deref())
     }
 
-    /// Forgets Tasks that a successful scan of their own Project did not
-    /// find.
+    /// Forgets Tasks that are no longer registered.
     ///
-    /// Only Projects that were actually readable count. A directory we could
-    /// not open — an unmounted share, a permissions blip — is not evidence
-    /// that anything was deleted, and discarding a Task's tick history on
-    /// that basis would leave the next outage unaccounted for.
-    pub fn prune_missing(
-        &mut self,
-        present: &std::collections::BTreeSet<&str>,
-        reachable_projects: &std::collections::BTreeSet<String>,
-    ) -> Vec<String> {
+    /// The registry is the whole truth about what exists, so this needs no
+    /// judgment about reachability: a file that cannot be read is still
+    /// registered, still listed as Broken, and keeps its history. Only
+    /// unregistering forgets a Task.
+    pub fn prune_missing(&mut self, present: &std::collections::BTreeSet<&str>) -> Vec<String> {
         let mut pruned = Vec::new();
         self.scheduled_tasks.retain(|task| {
-            let judged = task
-                .id
-                .split_once('/')
-                .is_some_and(|(project, _)| reachable_projects.contains(project));
-            let gone = judged && !present.contains(task.id.as_str());
+            let gone = !present.contains(task.id.as_str());
             if gone {
                 pruned.push(task.id.clone());
             }
@@ -272,13 +279,21 @@ impl State {
         self.scheduled_tasks.iter_mut().find(|task| task.id == id)
     }
 
-    /// Adds an entry for a newly discovered Task, keeping entries ordered by id.
-    pub fn upsert(&mut self, id: &str, file_path: &str) {
+    /// Adds an entry for a newly registered Task, keeping entries ordered by
+    /// id. The working directory is recorded as resolved, never as written:
+    /// state says where a Run actually starts.
+    pub fn upsert(&mut self, id: &str, file_path: &str, cwd: &str) {
         match self.task_mut(id) {
-            Some(existing) => existing.file_path = file_path.to_string(),
+            Some(existing) => {
+                existing.file_path = file_path.to_string();
+                existing.cwd = cwd.to_string();
+            }
             None => {
-                self.scheduled_tasks
-                    .push(TaskState::new(id.to_string(), file_path.to_string()));
+                self.scheduled_tasks.push(TaskState::new(
+                    id.to_string(),
+                    file_path.to_string(),
+                    cwd.to_string(),
+                ));
                 self.scheduled_tasks.sort_by(|a, b| a.id.cmp(&b.id));
             }
         }

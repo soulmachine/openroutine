@@ -44,8 +44,8 @@
     <div class="wrap">
       <h1>Docs</h1>
       <p class="lede">
-        Everything OpenRoutine does is driven by two plain-text files: a <code>*.cron.md</code>
-        task you own, and a <code>config.toml</code> that says where to look and what an agent is.
+        Everything OpenRoutine does is driven by two plain-text files: a markdown task file you
+        own, and a <code>config.toml</code> that says which files run and what an agent is.
       </p>
       <ul class="docs-toc">
         <li><a href="#install">Install</a></li>
@@ -69,14 +69,15 @@
       <pre><code>git clone https://github.com/soulmachine/openroutine
 cd openroutine
 cargo install --path .       <span class="c"># or: cargo build --release</span>
-openroutine init .           <span class="c"># writes a config and a sample task</span>
+openroutine init             <span class="c"># writes a config, prints a sample task</span>
+openroutine add hello.md     <span class="c"># register a task file</span>
 openroutine list             <span class="c"># see what would run</span>
 openroutine serve            <span class="c"># run the scheduler in the foreground</span>
 openroutine install          <span class="c"># or register it as a boot service, no sudo</span></code></pre>
       <p>
-        <code>init</code> writes <code>~/.config/openroutine/config.toml</code>, registers the
-        directory you name, and leaves a sample <code>hello.cron.md</code> beside it. Nothing else
-        to configure.
+        <code>init</code> writes <code>~/.config/openroutine/config.toml</code> and prints a sample
+        task to copy. Save it anywhere as markdown, then <code>openroutine add</code> registers it.
+        Nothing else to configure.
       </p>
     </div>
   </section>
@@ -86,9 +87,19 @@ openroutine install          <span class="c"># or register it as a boot service,
       <h2>First five minutes</h2>
       <p class="section-note">What <code>openroutine init</code> prints, and what to do with it.</p>
       <pre><code>Wrote config …/config.toml
-Wrote sample task …/hello.cron.md
 
-Try:  openroutine list                  # what would run
+A task is one markdown file. A starter, to save as hello.md:
+
+---
+name: hello
+description: Say hello, nightly
+cron: "0 9 * * *"
+---
+
+Say hello, then stop. This is a sample task — edit it freely.
+
+Try:  openroutine add hello.md          # register it
+      openroutine list                  # what would run
       openroutine run hello --dry-run   # what it would do
       openroutine serve                 # start the scheduler
 
@@ -106,12 +117,14 @@ registers one with your service manager, without sudo.</code></pre>
     <div class="wrap">
       <h2>Task files</h2>
       <p class="section-note">
-        A task is a single <code>*.cron.md</code> file. The frontmatter is the metadata, the body
-        is the prompt, and the file is the complete definition. Its identity is
-        <code>&lt;project&gt;/&lt;filename stem&gt;</code> — renaming or moving the file creates a
-        new task.
+        A task is a single markdown file, registered with <code>openroutine add</code>. The
+        frontmatter is the metadata, the body is the prompt, and the file is the complete
+        definition. Its <strong>id</strong> is derived from its frontmatter <code>name</code> and is
+        unique across the machine — renaming or moving the file changes nothing; changing
+        <code>name:</code> to something that derives a different id creates a new task.
       </p>
       <pre><code><span class="k">---</span>
+<span class="k">name:</span> hello
 <span class="k">description:</span> Say hello, nightly
 <span class="k">cron:</span> "0 9 * * *"
 <span class="k">---</span>
@@ -123,15 +136,15 @@ Say hello, then stop. This is a sample task — edit or delete it.</code></pre>
         <table class="keys">
           <thead><tr><th>Key</th><th>What it does</th></tr></thead>
           <tbody>
-            <tr><td><code>description</code></td><td>What the task is for. Shown in the CLI, the web UI, and <code>CRONTAB.md</code>.</td></tr>
+            <tr><td><code>name</code></td><td>What the task is called, in prose — <code>X timeline domain hunter</code> is fine. Its <strong>id</strong> is derived from it: lowercased, runs of whitespace become single hyphens, anything outside <code>[a-z0-9_-]</code> is dropped, and the ends are trimmed — giving <code>x-timeline-domain-hunter</code>. That id must come out 2–50 characters and contain a letter or digit. Required.</td></tr>
+            <tr><td><code>description</code></td><td>What the task is for. Shown in the CLI and the web UI. Required.</td></tr>
             <tr><td><code>cron</code></td><td>A crontab expression, e.g. <code>"0 2 * * *"</code>. Mutually exclusive with <code>at</code>.</td></tr>
             <tr><td><code>at</code></td><td>A single moment, RFC 3339. Fires once, then the task is Completed. Mutually exclusive with <code>cron</code>.</td></tr>
             <tr><td><code>catch_up</code></td><td>Run one tick missed while the daemon was away, if it is recent enough to still be wanted. Off by default.</td></tr>
-            <tr><td><code>disabled</code></td><td>Switched off in the file itself — a reviewable commit rather than invisible machine state. Not scheduled at all, so it accrues no ticks and no skips.</td></tr>
+            <tr><td><code>disabled</code></td><td>Switched off in the file itself — a reviewable commit rather than invisible machine state. Not scheduled at all, so it accrues no ticks and no skips — and, because it never runs, it never re-reads itself: turning it back on takes an <code>openroutine reload</code>.</td></tr>
             <tr><td><code>agent</code></td><td>Which configured agent runs it. Falls back to <code>default_agent</code>.</td></tr>
             <tr><td><code>jitter</code></td><td>How far the fire time may be nudged, deterministically. Accepts <code>2m</code>, <code>30s</code>, or a bare <code>0</code> for exact ticks.</td></tr>
-            <tr><td><code>timeout</code></td><td>The wall-clock budget for a run, or <code>none</code> to let it take as long as it takes. Falls back to <code>default_timeout</code>.</td></tr>
-            <tr><td><code>cwd</code></td><td>Where the agent starts, relative to the project root when relative.</td></tr>
+            <tr><td><code>cwd</code></td><td>Where the agent starts. Absolute paths are fine; relative ones resolve against the task file’s directory, which is also the default.</td></tr>
             <tr><td><code>model</code></td><td>Injected through the agent template’s <code>{model}</code> placeholder, as a single argument.</td></tr>
             <tr><td><code>permission_mode</code></td><td>Injected through the <code>{permission_mode}</code> placeholder, as a single argument.</td></tr>
             <tr><td><code>env</code></td><td>Environment for this task, layered over the config’s own.</td></tr>
@@ -143,8 +156,41 @@ Say hello, then stop. This is a sample task — edit or delete it.</code></pre>
         <code>1d</code>, or a bare number of seconds.
       </p>
       <p class="note">
-        <strong>A task with neither <code>cron</code> nor <code>at</code> is Manual</strong> — it
-        runs only when fired, from the API or the UI.
+        <strong><code>name</code>, <code>description</code>, and a non-empty body are
+        required</strong>; every other key is optional. The body is the prompt — a task with
+        nothing to say to its agent is refused.
+      </p>
+      <p class="note">
+        <strong>A task with neither <code>cron</code> nor <code>at</code> is a one-shot</strong> —
+        it runs once, as soon as the daemon takes it in, then shows as Completed. Editing the file
+        re-arms it at the next <code>openroutine reload</code>: a completed task never runs, so it
+        cannot notice the edit on its own.
+      </p>
+      <p class="note">
+        <strong>A task re-reads its own file when it runs.</strong> The moment a run starts —
+        scheduled, fired, or caught up — the task checks its file’s mtime, and its content digest
+        if the mtime moved; if the definition changed, the new one is what runs. So the prompt you
+        just fixed is the one that executes. Nothing is watched and nothing is polled: no timer,
+        no file watcher, no other task’s file touched, and the config not re-read.
+      </p>
+      <p class="note">
+        <strong>Everything else is a reload.</strong> The daemon reads its config and every
+        registered file at startup and when <code>openroutine reload</code> or
+        <code>POST /v1/reload</code> asks it to; <code>add</code> and <code>remove</code> ask for
+        one themselves. A reload is what puts an edit in front of <code>list</code>,
+        <code>status</code>, and the web UI, and what a task that is not going to run needs
+        before it notices at all — a completed one-shot re-arms only at a reload, and a
+        <code>disabled: true</code> task cannot switch itself back on, because neither ever runs.
+      </p>
+      <p class="note">
+        <strong>At the fire moment</strong>, a definition that changed into something that cannot
+        answer the tick withdraws it rather than running it: one that no longer loads, one that
+        now says <code>disabled: true</code>, and one that renamed itself all skip the run and
+        wait for a reload, since identity is a registry-level change. A cron tick still runs even
+        when the new schedule no longer contains it — it was legitimately due when it was planned
+        — while a one-shot whose <code>at:</code> moved before it arrived is skipped and re-armed
+        at the moment it now names. Each is recorded as a skip with reason
+        <code>definition-changed</code>.
       </p>
       <p class="note warn">
         <code>on_failure</code> and <code>tz</code> are declared in the v1 schema but
@@ -166,9 +212,8 @@ Say hello, then stop. This is a sample task — edit or delete it.</code></pre>
 <span class="c"># The agent a task gets when it names none.</span>
 default_agent = "claude"
 
-<span class="c"># Directories whose *.cron.md files should be scheduled.</span>
-[[projects]]
-path = "/Users/you/tasks"
+<span class="c"># The task files to schedule. `openroutine add` appends here.</span>
+tasks = []
 
 <span class="c"># An agent is a command template. {prompt} is substituted as a</span>
 <span class="c"># single argument; without it, the prompt arrives on stdin.</span>
@@ -183,17 +228,14 @@ cmd = "codex exec {prompt}"</code></pre>
         <table class="keys">
           <thead><tr><th>Key</th><th>Default</th><th>What it does</th></tr></thead>
           <tbody>
-            <tr><td><code>projects[].path</code></td><td>—</td><td>A directory to scan for <code>*.cron.md</code> files.</td></tr>
-            <tr><td><code>projects[].name</code></td><td>basename</td><td>Unique short name, forming the first half of every task id. May not be empty or contain <code>/</code>.</td></tr>
-            <tr><td><code>projects[].crontab_md</code></td><td>—</td><td>Whether to keep a <code>CRONTAB.md</code> at this project’s root. OpenRoutine never insists on writing into someone’s repository.</td></tr>
-            <tr><td><code>projects[].max_runs_per_task</code></td><td>—</td><td>Runs kept per task here, overriding the global setting.</td></tr>
+            <tr><td><code>tasks</code></td><td><code>[]</code></td><td>The registered task files, as absolute paths. <code>add</code> and <code>remove</code> edit this list; hand-editing works just as well.</td></tr>
             <tr><td><code>agents.&lt;name&gt;.cmd</code></td><td>—</td><td>The command template. <code>{prompt}</code> is substituted as a single argument, never spliced into a shell string; without it the prompt arrives on stdin. <code>{model}</code> and <code>{permission_mode}</code> work the same way.</td></tr>
             <tr><td><code>default_agent</code></td><td>unset</td><td>The agent for tasks that name none. Unset by default, so an omitted <code>agent:</code> leaves a task Broken until you opt in.</td></tr>
             <tr><td><code>env</code></td><td>empty</td><td>Environment handed to every run, layered over the login shell’s own and under whatever the task itself sets.</td></tr>
             <tr><td><code>max_parallel</code></td><td>unset</td><td>How many runs may be in flight at once, across every task. Unset means whatever the hardware tolerates.</td></tr>
             <tr><td><code>max_runs_per_task</code></td><td><code>50</code></td><td>How many runs of each task are kept on disk.</td></tr>
             <tr><td><code>max_log_bytes</code></td><td><code>100 MiB</code></td><td>How much of a run’s output is kept before the log is truncated.</td></tr>
-            <tr><td><code>default_timeout</code></td><td><code>1h</code></td><td>The timeout for tasks that name none. An unattended agent that hangs is the worst failure mode, so runs are bounded unless the author says otherwise.</td></tr>
+            <tr><td><code>idle_timeout</code></td><td><code>15m</code></td><td>How long a run may go without its agent producing output before its whole process group is ended, or <code>none</code> to let it stay quiet indefinitely. Measured from the last output, not from the start — a run that keeps talking is never interrupted, however long it takes, and there is no cap on total runtime. Machine-wide: a task cannot set its own.</td></tr>
             <tr><td><code>bind</code></td><td>loopback</td><td>Where the local API listens. Widening it is possible, discouraged, and never removes the token requirement.</td></tr>
           </tbody>
         </table>
@@ -219,9 +261,10 @@ cmd = "codex exec {prompt}"</code></pre>
           <tbody>
             <tr><td><code>serve</code></td><td>Run the scheduler in the foreground.</td></tr>
             <tr><td><code>list</code></td><td>Show every task, its schedule, and its health.</td></tr>
-            <tr><td><code>add &lt;dir&gt;</code></td><td>Register a directory so its tasks are scheduled. <code>--name</code> gives it a name; defaults to the directory’s own.</td></tr>
-            <tr><td><code>remove &lt;dir&gt;</code></td><td>Stop watching a directory.</td></tr>
-            <tr><td><code>init [dir]</code></td><td>Write a starter config and a sample task. Defaults to <code>.</code></td></tr>
+            <tr><td><code>add &lt;file.md&gt;</code></td><td>Register a task file so it is scheduled. Validates hard — a file that doesn’t parse is refused, not registered.</td></tr>
+            <tr><td><code>remove &lt;name-or-path&gt;</code></td><td>Unregister a task. <code>--delete</code> also deletes the file; without it the file stays yours.</td></tr>
+            <tr><td><code>reload [task]</code></td><td>Have the running daemon re-read the config and every registered file — unconditionally, changed or not — and report each task’s health. <code>add</code> and <code>remove</code> trigger one automatically. What a task that isn’t going to run needs before it notices an edit.</td></tr>
+            <tr><td><code>init</code></td><td>Write a starter config and print a sample task. Registers nothing.</td></tr>
             <tr><td><code>status</code></td><td>Summarise the daemon and what it would be running.</td></tr>
             <tr><td><code>run &lt;task&gt;</code></td><td>Fire a task now. <code>--dry-run</code> describes the run instead of starting one; <code>--text</code> adds context for this run — information for the agent, never instructions, and it cannot redefine the task.</td></tr>
             <tr><td><code>logs &lt;task&gt;</code></td><td>Show a task’s most recent run. <code>--follow</code> keeps printing as the run writes more.</td></tr>
@@ -244,7 +287,7 @@ cmd = "codex exec {prompt}"</code></pre>
         The daemon listens on <code>127.0.0.1:7373</code>, guarded by a bearer token from
         <code>openroutine token</code>.
       </p>
-      <pre><code>curl -X POST http://127.0.0.1:7373/v1/tasks/myrepo/todo-digest/fire \
+      <pre><code>curl -X POST http://127.0.0.1:7373/v1/tasks/todo-digest/fire \
   -H "Authorization: Bearer $(openroutine token)" \
   -d '{"text": "Sentry alert SEN-4521 fired in prod."}'</code></pre>
       <p class="note">
@@ -258,18 +301,19 @@ cmd = "codex exec {prompt}"</code></pre>
         <table class="keys">
           <thead><tr><th>Route</th><th>What it does</th></tr></thead>
           <tbody>
-            <tr><td><code>GET /v1/tasks</code></td><td>Every discovered task, with schedule and next fire time.</td></tr>
-            <tr><td><code>GET /v1/tasks/{project}/{name}</code></td><td>One task in detail.</td></tr>
-            <tr><td><code>GET /v1/tasks/{project}/{name}/runs</code></td><td>That task’s run history.</td></tr>
-            <tr><td><code>POST /v1/tasks/{project}/{name}/fire</code></td><td>Start a run. Returns a run id and its log path.</td></tr>
-            <tr><td><code>GET /v1/runs/{project}/{name}/{run}</code></td><td>One run in detail.</td></tr>
-            <tr><td><code>GET /v1/runs/{project}/{name}/{run}/log</code></td><td>That run’s log.</td></tr>
-            <tr><td><code>GET /v1/runs/{project}/{name}/{run}/log/stream</code></td><td>Live-tail the log over SSE.</td></tr>
-            <tr><td><code>POST /v1/runs/{project}/{name}/{run}/cancel</code></td><td>Stop a run in flight.</td></tr>
-            <tr><td><code>POST /v1/tasks/{project}/{name}/pause</code></td><td>Hold one task.</td></tr>
-            <tr><td><code>POST /v1/tasks/{project}/{name}/resume</code></td><td>Release one task.</td></tr>
+            <tr><td><code>GET /v1/tasks</code></td><td>Every registered task, with schedule and next fire time.</td></tr>
+            <tr><td><code>GET /v1/tasks/{id}</code></td><td>One task in detail.</td></tr>
+            <tr><td><code>GET /v1/tasks/{id}/runs</code></td><td>That task’s run history.</td></tr>
+            <tr><td><code>POST /v1/tasks/{id}/fire</code></td><td>Start a run. Returns a run id and its log path.</td></tr>
+            <tr><td><code>GET /v1/runs/{id}/{run}</code></td><td>One run in detail.</td></tr>
+            <tr><td><code>GET /v1/runs/{id}/{run}/log</code></td><td>That run’s log.</td></tr>
+            <tr><td><code>GET /v1/runs/{id}/{run}/log/stream</code></td><td>Live-tail the log over SSE.</td></tr>
+            <tr><td><code>POST /v1/runs/{id}/{run}/cancel</code></td><td>Stop a run in flight.</td></tr>
+            <tr><td><code>POST /v1/tasks/{id}/pause</code></td><td>Hold one task.</td></tr>
+            <tr><td><code>POST /v1/tasks/{id}/resume</code></td><td>Release one task.</td></tr>
             <tr><td><code>POST /v1/pause</code></td><td>Hold every task on this machine.</td></tr>
             <tr><td><code>POST /v1/resume</code></td><td>Release everything.</td></tr>
+            <tr><td><code>POST /v1/reload</code></td><td>Re-read the config and every registered task file; returns each task’s health.</td></tr>
           </tbody>
         </table>
       </div>
@@ -284,7 +328,8 @@ cmd = "codex exec {prompt}"</code></pre>
         the desk, a home server — register it with the system’s service manager.
       </p>
       <pre><code>cargo install --path .        <span class="c"># install to a stable path; see below</span>
-openroutine init ~/tasks      <span class="c"># config, and a sample task to prove it works</span>
+openroutine init              <span class="c"># config; prints a sample task</span>
+openroutine add hello.md      <span class="c"># a task to prove it works</span>
 openroutine install           <span class="c"># register with launchd/systemd, no sudo</span>
 openroutine status            <span class="c"># daemon: running (pid …)</span></code></pre>
       <p>
@@ -376,28 +421,28 @@ openroutine logs &lt;task&gt;  <span class="c"># what the agent actually printed
         <table class="keys">
           <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
           <tbody>
-            <tr><td><code>Task</code></td><td>A unit of agent work, defined entirely by a single <code>.cron.md</code> file. Its identity is <code>&lt;project&gt;/&lt;filename stem&gt;</code>; renaming or moving the file creates a new task.</td></tr>
+            <tr><td><code>Task</code></td><td>A unit of agent work, defined entirely by a single markdown file registered with <code>openroutine add</code>. Its <code>name</code> is prose for people; its id is derived from that name and is what everything keys by. Renaming or moving the file changes nothing.</td></tr>
+            <tr><td><code>Id</code></td><td>A task’s identity, derived from its <code>name</code>: lowercase, whitespace runs to single hyphens, anything outside <code>[a-z0-9_-]</code> dropped, ends trimmed. Unique across the machine — two names deriving one id is refused, not resolved. It is what the state file records, what <code>runs/&lt;id&gt;/</code> is called, what an API path carries, and what the CLI answers to.</td></tr>
             <tr><td><code>Agent</code></td><td>A configured command template that accepts a prompt. Any CLI qualifies; OpenRoutine never talks to a model API itself.</td></tr>
-            <tr><td><code>Project</code></td><td>A directory registered with the daemon and scanned for task files. Its name forms the first half of every task id.</td></tr>
             <tr><td><code>Daemon</code></td><td>The single long-lived process that is the scheduler, the runner, the API, and the UI. The OS supervises it and schedules nothing.</td></tr>
+            <tr><td><code>Reload</code></td><td>The moment the daemon re-reads its config and every registered file, whether or not anything changed — at startup, on <code>openroutine reload</code>, or after an <code>add</code> or <code>remove</code>. The only way a task that will not run — completed, disabled, or broken — ever notices that it was edited.</td></tr>
+            <tr><td><code>Refresh</code></td><td>The check a task makes on its own file at the moment it is about to run, by tick or by fire: a changed mtime, then a changed digest, and only then the new definition, adopted for that run. Confined to the run path and to one file — nothing is watched, nothing is polled, and a task that never fires never refreshes.</td></tr>
             <tr><td><code>Tick</code></td><td>An instant at which a task’s schedule comes due. Every tick becomes exactly one run or one skip.</td></tr>
             <tr><td><code>Run</code></td><td>A single execution of a task’s prompt by its agent, produced by a scheduled tick or by a fire.</td></tr>
-            <tr><td><code>Skip</code></td><td>A tick that was not run, recorded with its reason: <code>overlap</code>, <code>daemon-down</code>, <code>missed</code>, or <code>paused</code>. Never silent.</td></tr>
+            <tr><td><code>Skip</code></td><td>A tick that was not run, recorded with its reason: <code>overlap</code>, <code>daemon-down</code>, <code>missed</code>, <code>paused</code>, or <code>definition-changed</code> — a refresh found the tick no longer answerable. Never silent — every tick becomes exactly one run or one skip.</td></tr>
             <tr><td><code>Fire</code></td><td>Starting a run on demand — via the API or UI — outside the schedule.</td></tr>
             <tr><td><code>Dry run</code></td><td>Rendering a task’s fully resolved execution plan without spawning anything. A read, not a run; nothing is recorded.</td></tr>
-            <tr><td><code>Timeout</code></td><td>The wall-clock budget for a single run. When it expires the run’s whole process group is ended and the run is recorded as timed out — never left hanging.</td></tr>
+            <tr><td><code>Idle timeout</code></td><td>How long a run may go without its agent saying anything. Measured from the last output, so work that is visibly progressing is never interrupted however long it takes, while a run that has hung is reaped. When it expires the run’s whole process group is ended and the run is recorded as timed out — never left hanging.</td></tr>
             <tr><td><code>Jitter</code></td><td>The deterministic offset between a task’s tick and the moment it fires, derived from the task id so it never changes between runs.</td></tr>
-            <tr><td><code>Manual</code></td><td>A task with no schedule — neither <code>cron</code> nor <code>at</code> — that runs only when fired.</td></tr>
-            <tr><td><code>One-shot</code></td><td>A task scheduled by a single future timestamp (<code>at</code>). It fires once, then becomes Completed. Not the same as Manual.</td></tr>
-            <tr><td><code>Completed</code></td><td>A one-shot task that has answered its moment. Machine state only: editing the timestamp gives it something to do again.</td></tr>
+            <tr><td><code>One-shot</code></td><td>A task with no <code>cron</code>. With <code>at:</code> it fires once at that moment; without one it fires once as soon as the daemon takes it in. Either way it then becomes Completed.</td></tr>
+            <tr><td><code>Completed</code></td><td>A one-shot task that has answered its moment. Machine state only: editing the file gives it something to do again — at the next <code>reload</code>, since a task that will not run cannot refresh.</td></tr>
             <tr><td><code>Catch-up</code></td><td>Opting a task into running one tick it missed while the daemon was away. Off by default.</td></tr>
             <tr><td><code>Disabled</code></td><td>Switched off in its own frontmatter. Not scheduled at all, so it accrues no ticks and no skips — unlike a paused task.</td></tr>
             <tr><td><code>Paused</code></td><td>Held at runtime. Machine-owned state, never part of the definition; a task runs only when neither disabled nor paused. A tick that arrives while held becomes a skip, not a gap.</td></tr>
             <tr><td><code>Interrupted</code></td><td>A run whose daemon disappeared before it finished. Recorded on the next start, so no run is left claiming to be running forever.</td></tr>
             <tr><td><code>Ready</code></td><td>A task whose definition parses, validates, and names an agent that exists. The only state from which a tick can produce a run.</td></tr>
-            <tr><td><code>Broken</code></td><td>A task whose file exists but whose definition fails to parse or validate. Always surfaced visibly with its error; never silently unscheduled.</td></tr>
-            <tr><td><code>Familiar</code></td><td>A task whose definition is the one that last started a run. A new or edited task is flagged instead — registering a project trusts its committers, so an arriving task is announced rather than blocked.</td></tr>
-            <tr><td><code>CRONTAB.md</code></td><td>The table OpenRoutine keeps at each project’s root: every task there, with its description, schedule, and agent. Derived from definitions alone, so it is safe to commit.</td></tr>
+            <tr><td><code>Broken</code></td><td>A registered task whose file is missing, or whose definition fails to parse or validate. Always surfaced visibly with its error; never silently unscheduled.</td></tr>
+            <tr><td><code>Familiar</code></td><td>A task whose definition is the one that last started a run. A new or edited task is flagged instead — registering a file trusts whoever can edit it, so an arriving change is announced rather than blocked.</td></tr>
           </tbody>
         </table>
       </div>

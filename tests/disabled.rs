@@ -14,7 +14,8 @@ const ON: &str =
 async fn daemon_at(env: &TestEnv, now: &str) -> (Daemon, ManualClock) {
     let clock = ManualClock::new(at(now));
     let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
-        .expect("daemon should build");
+        .expect("daemon should build")
+        .watching_config(env.config_path());
     daemon.reload().await.expect("reload should succeed");
     (daemon, clock)
 }
@@ -50,7 +51,7 @@ async fn a_disabled_task_accumulates_no_skips() {
         daemon.tick().await.unwrap();
     }
 
-    let skips = env.read_state()["recordedSkips"]["proj/off"].clone();
+    let skips = env.read_state()["recordedSkips"]["off"].clone();
     assert!(
         skips.is_null(),
         "off is not the same as held: a task switched off in its file is not \
@@ -68,7 +69,7 @@ fn a_disabled_task_is_listed_as_such_rather_than_ready() {
 
     let row = out
         .lines()
-        .find(|line| line.contains("proj/off"))
+        .find(|line| line.contains("off"))
         .unwrap_or_else(|| panic!("it should still be listed:\n{out}"));
     assert!(
         row.starts_with("disabled"),
@@ -112,7 +113,7 @@ async fn a_disabled_task_cannot_be_fired_either() {
     env.write_config();
 
     let (mut daemon, _clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
-    let outcome = daemon.fire("proj/off", None);
+    let outcome = daemon.fire("off", None);
 
     assert!(
         matches!(outcome, openroutine::daemon::FireOutcome::Disabled),

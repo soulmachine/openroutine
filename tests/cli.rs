@@ -84,7 +84,7 @@ fn serving_discovers_tasks_writes_state_and_stops_cleanly_on_sigterm() {
 
     let state = env.read_state();
     let entry = &state["scheduledTasks"][0];
-    assert_eq!(entry["id"], "proj/todo-digest");
+    assert_eq!(entry["id"], "todo-digest");
     assert_eq!(
         entry["filePath"],
         task_path.canonicalize().unwrap().display().to_string()
@@ -113,17 +113,17 @@ fn nothing_is_written_outside_the_sandbox() {
     daemon.stop();
 
     // Everything the daemon created lives under the temp root: the state dir
-    // it was told to use, and — inside the Project — only the CRONTAB.md it
-    // is documented to keep there.
-    let mut project_entries: Vec<String> = std::fs::read_dir(env.project_dir())
+    // it was told to use, and nothing at all beside the Task file — a task
+    // file's neighbours are the user's business, never openroutine's.
+    let mut neighbours: Vec<String> = std::fs::read_dir(env.project_dir())
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
         .collect();
-    project_entries.sort();
+    neighbours.sort();
     assert_eq!(
-        project_entries,
-        vec!["CRONTAB.md".to_string(), "todo-digest.cron.md".to_string()],
-        "the daemon writes nothing else into the Project"
+        neighbours,
+        vec!["todo-digest.md".to_string()],
+        "the daemon writes nothing beside a task file"
     );
 }
 
@@ -168,8 +168,10 @@ fn a_relative_xdg_state_home_falls_back_to_home() {
     );
 }
 
+/// The defining behaviour of the explicit-only model, at the process
+/// boundary: a real daemon, a real registration, and no reload in between.
 #[test]
-fn a_task_added_while_serving_is_picked_up_without_a_restart() {
+fn a_task_registered_while_serving_waits_for_a_reload() {
     let env = TestEnv::new();
     env.write_config();
 
@@ -179,23 +181,58 @@ fn a_task_added_while_serving_is_picked_up_without_a_restart() {
         env.state_file().exists()
     });
 
-    // Dropped in after the daemon is already up, as a `git pull` would.
-    env.write_task(
+    // Registered after the daemon is already up.
+    let file = env.write_unregistered_task(
         "arrived",
         "---\ndescription: Arrived later\ncron: \"@hourly\"\nagent: stub\n---\n\nping\n",
     );
+    env.run_ok(&["add", file.to_str().unwrap()]);
+    // `add` asks the running daemon to reload, so undo that here: this test
+    // is about what happens when nobody asks.
+    knows_about(&env, "arrived");
 
-    wait_up_to(
-        Duration::from_secs(45),
-        "the new task to be noticed",
-        || {
-            env.try_read_state().is_some_and(|state| {
-                state["scheduledTasks"]
-                    .as_array()
-                    .is_some_and(|tasks| tasks.iter().any(|task| task["id"] == "proj/arrived"))
-            })
-        },
+    // A config edit nobody announced — the case `add` cannot cover.
+    env.write_unregistered_task(
+        "quiet",
+        "---\ndescription: Registered by hand\ncron: \"@hourly\"\nagent: stub\n---\n\nping\n",
+    );
+    let config = std::fs::read_to_string(env.config_path()).unwrap();
+    let edited = config.replace(
+        "tasks = [",
+        &format!(
+            "tasks = [{:?}, ",
+            env.project_dir().join("quiet.md").display().to_string()
+        ),
+    );
+    assert_ne!(edited, config, "the test's own edit should have landed");
+    std::fs::write(env.config_path(), edited).unwrap();
+
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        !knows_about_now(&env, "quiet"),
+        "nothing is watched and nothing is polled: an unannounced edit waits"
+    );
+
+    env.run_ok(&["reload"]);
+    assert!(
+        knows_about_now(&env, "quiet"),
+        "and a reload is what makes it real"
     );
 
     assert!(daemon.stop().success());
+}
+
+/// Waits for the daemon's state to mention a Task.
+fn knows_about(env: &TestEnv, id: &str) {
+    wait_until("the registered task to be noticed", || {
+        knows_about_now(env, id)
+    });
+}
+
+fn knows_about_now(env: &TestEnv, id: &str) -> bool {
+    env.try_read_state().is_some_and(|state| {
+        state["scheduledTasks"]
+            .as_array()
+            .is_some_and(|tasks| tasks.iter().any(|task| task["id"] == id))
+    })
 }

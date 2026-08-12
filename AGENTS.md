@@ -1,5 +1,42 @@
 # Agent instructions
 
+## The project, in one screen
+
+OpenRoutine is a single Rust binary whose daemon is the scheduler, the REST API, and the local
+web UI. A **Task** is one markdown file — frontmatter for metadata, body as the prompt —
+**Registered** by absolute path in `tasks = [...]` in `~/.config/openroutine/config.toml`.
+Nothing is discovered: there is no directory registration, no scanning, no filename rule, and
+no file watcher.
+
+Five things worth knowing before you change anything:
+
+- **Identity is derived.** The frontmatter `name` is prose; the **Id** comes from it by
+  lowercasing, turning whitespace runs into hyphens, dropping anything outside `[a-z0-9_-]`,
+  and trimming the ends. The Id is what the state file, `runs/<id>/`, the API paths, and the
+  CLI all use. Uniqueness is checked on the Id, never the name.
+- **Definitions change at two moments, both narrow.** A **Reload** re-reads the config and
+  every registered file — startup, `openroutine reload`, `POST /v1/reload`, or the automatic
+  one after `add`/`remove`. A **Refresh** re-reads *one* file on the run path, as that Task is
+  about to run. Nothing is watched and nothing is polled.
+- **Runs are bounded by silence, not duration.** There is no cap on how long a Run may take;
+  it is ended after `idle_timeout` (config, machine-wide, default 15m) without output.
+- **Every Tick becomes exactly one Run or one Skip.** That invariant is load-bearing — check
+  it before changing anything in `src/daemon.rs`.
+- **Broken is visible, never silent.** A Task that cannot run is still listed, with its error.
+
+Read `CONTEXT.md` for the vocabulary before writing prose or naming anything, and consult
+`DECISIONS.md` before reopening a settled question — most "open" questions are answered there.
+`.scratch/openroutine-v1/spec.md` is the full design; `docs/adr/` holds the two architectural
+decisions.
+
+## Testing
+
+Two seams, and no others: the **process boundary** (integration tests spawn the real binary in
+a temp XDG sandbox and assert only on CLI output, API responses, and the files written, with
+stub agent scripts standing in for a real agent CLI), and the **clock** (the scheduling core
+takes an injected clock). No test reaches into private functions or internal structs. Adding a
+test hook to the product to make a test easier is the wrong move.
+
 ## Agent skills
 
 ### Issue tracker

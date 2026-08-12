@@ -4,13 +4,13 @@
 //! dry run is a description of the real thing rather than a second opinion.
 
 use crate::config::Config;
-use crate::discovery::{ScannedTask, TaskHealth};
+use crate::registry::{RegisteredTask, TaskHealth};
 use crate::runner::{self, AgentParams};
 use chrono::{DateTime, TimeZone, Utc};
 
 /// Renders the plan for one Task.
 pub fn render<Tz: TimeZone>(
-    task: &ScannedTask,
+    task: &RegisteredTask,
     config: &Config,
     now: DateTime<Utc>,
     zone: &Tz,
@@ -76,18 +76,20 @@ where
 
     out.push_str(&format!(
         "  cwd:      {}\n",
-        definition.working_dir(&task.project_dir).display()
+        definition.working_dir(&task.dir).display()
     ));
 
-    let timeout = definition
-        .timeout
-        .or_else(|| config.default_timeout().ok())
+    // Machine-wide, not per Task — but still worth showing, since it is one of
+    // the few things that can end a Run the author did not ask to end. Named
+    // for what it measures: silence, not total runtime.
+    let idle_timeout = config
+        .idle_timeout()
         .map(|timeout| match timeout {
             crate::task::Timeout::Never => "none".to_string(),
             crate::task::Timeout::After(duration) => humanise(duration),
         })
-        .unwrap_or_else(|| "unknown".to_string());
-    out.push_str(&format!("  timeout:  {timeout}\n"));
+        .unwrap_or_else(|_| "unknown".to_string());
+    out.push_str(&format!("  idle out: {idle_timeout}\n"));
 
     // Names only. A dry run is the sort of thing people paste into a bug
     // report, and an API token is exactly what a Task's `env:` carries.
@@ -131,7 +133,7 @@ fn humanise(duration: chrono::Duration) -> String {
 }
 
 fn next_fire<Tz: TimeZone>(
-    task: &ScannedTask,
+    task: &RegisteredTask,
     definition: &crate::task::TaskDefinition,
     now: DateTime<Utc>,
     zone: &Tz,
@@ -139,8 +141,8 @@ fn next_fire<Tz: TimeZone>(
 where
     Tz::Offset: std::fmt::Display,
 {
-    if definition.schedule.is_manual() {
-        return "no schedule — runs only when fired".to_string();
+    if matches!(definition.schedule, crate::schedule::Schedule::Once) {
+        return "once — as soon as the daemon takes this definition in".to_string();
     }
 
     let Some(tick) = definition.schedule.next_tick_after(now, zone) else {

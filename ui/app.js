@@ -108,13 +108,13 @@ async function openTask(id) {
   $("task-view").hidden = false;
   stopStream();
 
-  const task = await api(`/v1/tasks/${id}`);
+  const task = await api(`/v1/tasks/${encodeURIComponent(id)}`);
   $("task-title").textContent = id;
   $("task-path").textContent = `${task.path ?? ""} — edit this file to change the task`;
   $("pause-task").textContent = task.paused ? "Resume" : "Pause";
   $("run-now").disabled = Boolean(task.running);
 
-  const history = await api(`/v1/tasks/${id}/runs`);
+  const history = await api(`/v1/tasks/${encodeURIComponent(id)}/runs`);
   const body = document.querySelector("#runs tbody");
   body.replaceChildren();
   $("no-runs").hidden = history.runs.length > 0;
@@ -140,7 +140,7 @@ async function openTask(id) {
       stop.className = "ghost";
       stop.textContent = "cancel";
       stop.addEventListener("click", async () => {
-        await api(`/v1/runs/${id}/${run.runId}/cancel`, { method: "POST" });
+        await api(`/v1/runs/${encodeURIComponent(id)}/${run.runId}/cancel`, { method: "POST" });
         openTask(id);
       });
       actions.append(stop);
@@ -160,7 +160,7 @@ async function showLog(id, run) {
   if (run.status === "running") {
     // Follow it as it is written; the daemon closes the stream when the
     // run ends.
-    state.stream = new EventSource(`/v1/runs/${id}/${run.runId}/log/stream`);
+    state.stream = new EventSource(`/v1/runs/${encodeURIComponent(id)}/${run.runId}/log/stream`);
     state.stream.onmessage = (event) => {
       log.textContent += event.data;
       log.scrollTop = log.scrollHeight;
@@ -169,7 +169,7 @@ async function showLog(id, run) {
     return;
   }
 
-  const response = await fetch(`/v1/runs/${id}/${run.runId}/log`, {
+  const response = await fetch(`/v1/runs/${encodeURIComponent(id)}/${run.runId}/log`, {
     credentials: "same-origin",
   });
   log.textContent = await response.text();
@@ -200,7 +200,7 @@ $("pause-all").addEventListener("click", async () => {
 
 $("run-now").addEventListener("click", async () => {
   try {
-    await api(`/v1/tasks/${state.current}/fire`, { method: "POST" });
+    await api(`/v1/tasks/${encodeURIComponent(state.current)}/fire`, { method: "POST" });
   } catch (error) {
     banner(error.message);
   }
@@ -209,7 +209,7 @@ $("run-now").addEventListener("click", async () => {
 
 $("pause-task").addEventListener("click", async () => {
   const paused = $("pause-task").textContent === "Pause";
-  await api(`/v1/tasks/${state.current}/${paused ? "pause" : "resume"}`, { method: "POST" });
+  await api(`/v1/tasks/${encodeURIComponent(state.current)}/${paused ? "pause" : "resume"}`, { method: "POST" });
   openTask(state.current);
 });
 

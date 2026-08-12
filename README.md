@@ -13,10 +13,10 @@ a build. [site/DEPLOY.md](site/DEPLOY.md) has the settings.
 
 ```markdown
 ---
+name: todo-digest
 description: Nightly TODO/FIXME triage
 cron: "0 2 * * *"
 agent: claude
-timeout: 30m
 ---
 
 Review all open TODO and FIXME comments in this repository.
@@ -24,16 +24,16 @@ For any that are trivially fixable, fix them and open a pull
 request. Summarize everything else in reports/todo-digest.md.
 ```
 
-Drop that in your repo as `todo-digest.cron.md` and it is the complete definition — diffed, code-reviewed, and greppable like everything else you commit. A single Rust daemon (`openroutine serve`, or `openroutine install` once for boot) watches your registered projects, schedules everything in-process, runs each task through the agent CLI you configure, and serves a REST fire endpoint plus a local web UI for history, logs, and pause/resume. Swap `agent: claude` for `agent: codex` — one line in a diff — and the same task runs on the other vendor's agent, which is precisely the move neither vendor's scheduler will ever offer.
+Save that in your repo as `todo-digest.md`, register it once with `openroutine add todo-digest.md`, and it is the complete definition — diffed, code-reviewed, and greppable like everything else you commit. A single Rust daemon (`openroutine serve`, or `openroutine install` once for boot) runs your registered task files, schedules everything in-process, runs each task through the agent CLI you configure, and serves a REST fire endpoint plus a local web UI for history, logs, and pause/resume. Swap `agent: claude` for `agent: codex` — one line in a diff — and the same task runs on the other vendor's agent, which is precisely the move neither vendor's scheduler will ever offer.
 
 ## Compared to the vendors
 
 |  | Claude Code Routines | ChatGPT scheduled tasks | OpenRoutine |
 | :-- | :-- | :-- | :-- |
 | Where it runs | Anthropic-managed cloud (or org-hosted environments) | OpenAI cloud; project tasks run locally, but only while the desktop app is running | Your machine, under a headless daemon supervised by launchd/systemd |
-| Where tasks are defined | Web UI / `/schedule`, stored in your claude.ai account | Chat or the Scheduled page, stored in your OpenAI account | `*.cron.md` files in your repo |
+| Where tasks are defined | Web UI / `/schedule`, stored in your claude.ai account | Chat or the Scheduled page, stored in your OpenAI account | Markdown files in your repo |
 | Agents | Claude Code only | GPT models only | Any agent CLI: Claude Code, Codex, Gemini, your own |
-| Triggers | Schedules, API endpoint, GitHub events | Schedules and change-monitoring, hourly at most | Cron, one-shot, and manual schedules; REST fire endpoint |
+| Triggers | Schedules, API endpoint, GitHub events | Schedules and change-monitoring, hourly at most | Cron and one-shot schedules; REST fire endpoint |
 | Management UI | claude.ai web UI | Scheduled page in the app | Local web UI, no account |
 | Limits | Subscription usage, daily run caps | 3–15 active tasks by plan; unattended tasks may auto-pause | Whatever your hardware tolerates |
 | Availability | Research preview, paid plans | Paid plans | Open source |
@@ -46,21 +46,24 @@ Requires a Rust toolchain; macOS and Linux only (Windows is an explicit non-goal
 
 ```bash
 cargo install --path .          # or: cargo build --release
-openroutine init .              # writes a config and a sample task
+openroutine init                # writes a config and prints a sample task
+openroutine add my-task.md      # register a task file you wrote
 openroutine list                # see what would run
 openroutine serve               # run the scheduler in the foreground
 openroutine install             # or register it as a boot service, no sudo
 ```
 
-`init` writes `~/.config/openroutine/config.toml`, registers the directory you
-name, and leaves a sample `hello.cron.md` beside it. Nothing else to configure.
-[Deploy](#deploy) covers leaving it running on a machine you don't sit at.
+`init` writes `~/.config/openroutine/config.toml` and prints a sample task file
+to copy from; `add` registers each task file you write, after validating it.
+Nothing else to configure. [Deploy](#deploy) covers leaving it running on a
+machine you don't sit at.
 
 ## Using it
 
 ```bash
 openroutine list                  # every task, its schedule, and its health
 openroutine status                # is the daemon up, and what does it hold
+openroutine reload                # re-read the config and every task file
 openroutine run <task> --dry-run  # exactly what a run would do, spawning nothing
 openroutine run <task>            # fire one now, through the daemon
 openroutine logs <task> --follow  # tail the latest run
@@ -68,16 +71,23 @@ openroutine pause --all           # stop everything firing, keep the daemon up
 openroutine open                  # the local web UI, no account
 ```
 
-Tasks are files, so everything else is ordinary editing: drop a `.cron.md` in a
-registered directory and it schedules within seconds; `git pull` one in and the
-same happens, flagged as new so you notice. Turn one off with `disabled: true`
-in its frontmatter — a change your reviewer can see.
+Tasks are files, so everything else is ordinary editing. A task re-reads its
+own file as it is about to run, so the prompt you just fixed is the one that
+runs — but nothing is watched or polled, so the schedule itself never moves
+between runs. `openroutine reload` is what makes an edit visible everywhere
+else, and `add` and `remove` ask for one themselves.
+
+The one thing to remember: a task that isn't going to run can't notice that
+you changed it. A finished one-shot, a broken task, and a task you switched
+off with `disabled: true` all need `openroutine reload` — flipping `disabled`
+back to `false` in the file does nothing on its own. (Turning a task off that
+way is still the right move: it's a change your reviewer can see.)
 
 The daemon also serves a REST API on `127.0.0.1:7373`, guarded by a bearer
 token (`openroutine token`), so alerting systems and git hooks can fire a task:
 
 ```bash
-curl -X POST http://127.0.0.1:7373/v1/tasks/myrepo/todo-digest/fire \
+curl -X POST http://127.0.0.1:7373/v1/tasks/todo-digest/fire \
   -H "Authorization: Bearer $(openroutine token)" \
   -d '{"text": "Sentry alert SEN-4521 fired in prod."}'
 ```
@@ -94,7 +104,8 @@ register it with the system's service manager:
 
 ```bash
 cargo install --path .        # install to a stable path; see below
-openroutine init ~/tasks      # config, and a sample task to prove it works
+openroutine init              # write the config; prints a sample task
+openroutine add hello.md      # register a task to prove it works
 openroutine install           # register with launchd/systemd, no sudo
 openroutine status            # daemon: running (pid …)
 ```
@@ -191,9 +202,19 @@ it and leaves your config, state, and tasks untouched.
 
 ## Status
 
-**v1 is implemented**: scheduler, runner, REST API, and web UI, in one binary.
-[openroutine.md](openroutine.md) is the full design; [CONTEXT.md](CONTEXT.md)
-is the glossary; [docs/adr/](docs/adr/) records the architectural decisions.
+**Implemented**: scheduler, runner, REST API, and web UI, in one binary.
+[.scratch/openroutine-v1/spec.md](.scratch/openroutine-v1/spec.md) is the full
+design; [CONTEXT.md](CONTEXT.md) is the glossary; [docs/adr/](docs/adr/)
+records the architectural decisions.
+
+**1.0 breaks with 0.2.** Tasks are registered one file at a time rather than
+by directory, so a `[[projects]]` config no longer loads — register each file
+with `openroutine add <file.md>`. Task files now need a `name:`, their id is
+derived from it, and `timeout:` is gone: a run is bounded by silence
+(`idle_timeout` in config, 15m) rather than by total runtime. Run history from
+before the change is orphaned rather than migrated. From here the frontmatter
+schema, the CLI, the REST API, and the on-disk layout are a stable surface;
+anything that breaks them waits for 2.0.
 
 Known limits, all deliberate: no GitHub-event triggers and no notifications
 (the fire endpoint is the integration point); state is written atomically

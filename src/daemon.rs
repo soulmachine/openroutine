@@ -7,7 +7,7 @@
 
 use crate::clock::Clock;
 use crate::config::Config;
-use crate::discovery::{self, TaskHealth};
+use crate::registry::{self, TaskHealth};
 use crate::run::{self, RunRecord, RunStatus, Trigger};
 use crate::runner;
 use crate::state::{Skip, State};
@@ -35,13 +35,36 @@ const CATCH_UP_WINDOW: chrono::Duration = chrono::Duration::days(7);
 struct Scheduled {
     id: String,
     path: PathBuf,
-    project_dir: PathBuf,
+    /// The directory holding the file, which a relative `cwd:` resolves
+    /// against and which a Run falls back to.
+    dir: PathBuf,
     definition: TaskDefinition,
     agent: String,
     /// The definition's digest, recorded when a Run starts.
     digest: String,
+    /// The file's mtime when it was last read. In memory only: a Refresh uses
+    /// it to skip reading a file nothing has touched, and a restart re-reads
+    /// everything anyway.
+    mtime: Option<std::time::SystemTime>,
     /// What this Task is waiting for, if anything.
     pending: Option<Pending>,
+}
+
+/// What a Refresh made of a Task's file, moments before it would have run.
+enum Refreshed {
+    /// The definition on disk is the one already loaded.
+    Unchanged,
+    /// A new definition was adopted and is what should now run.
+    Adopted,
+    /// The file changed into something that cannot run at all — it no longer
+    /// loads, it switched itself off, or it renamed itself. The Run does not
+    /// happen and the Task holds no schedule until a Reload says what it has
+    /// become. The string is why, in the words the Skip records.
+    Withdrawn(String),
+    /// The Task is still runnable, but not for *this* Tick: a One-shot whose
+    /// moment moved before it arrived. The Run does not happen, and the Task
+    /// stays scheduled — already re-armed at the moment it now names.
+    Rearmed(String),
 }
 
 /// A Run in flight, and what is needed to stop it.
@@ -67,6 +90,36 @@ pub enum FireOutcome {
 pub enum CancelOutcome {
     Cancelled,
     NotRunning,
+}
+
+/// What a Reload made of one Task.
+#[derive(Debug, Clone)]
+pub struct ReloadEntry {
+    pub id: String,
+    pub path: String,
+    pub status: ReloadStatus,
+    /// Why it cannot run, when it cannot.
+    pub error: Option<String>,
+    pub warnings: Vec<String>,
+    /// Set when this Task is new or has changed since it last ran.
+    pub novelty: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReloadStatus {
+    Ready,
+    Disabled,
+    Broken,
+}
+
+impl ReloadStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReloadStatus::Ready => "ready",
+            ReloadStatus::Disabled => "disabled",
+            ReloadStatus::Broken => "broken",
+        }
+    }
 }
 
 /// A scheduled Task as seen from outside.
@@ -95,7 +148,7 @@ struct Pending {
 }
 
 pub struct Daemon {
-    /// Where the config was loaded from, so a rescan can pick up a Project
+    /// Where the config was loaded from, so a Reload can pick up a Task
     /// registered or removed while the Daemon is running.
     config_path: Option<PathBuf>,
     config: Config,
@@ -115,15 +168,20 @@ pub struct Daemon {
     running: HashMap<String, RunningRun>,
     /// Resolved once at construction: a bad value must fail loudly at
     /// startup, not silently at 2am when a Tick tries to use it.
-    default_timeout: crate::task::Timeout,
-    /// What was last said about each Task, so a rescan repeats nothing.
+    idle_timeout: crate::task::Timeout,
+    /// What was last said about each Task file, so a rescan repeats nothing.
+    /// Keyed by path rather than name: two files can claim one name, and only
+    /// one of them can win it.
     announced: HashMap<String, Vec<String>>,
     /// Ticks missed while away that `catch_up` says should still run, found
     /// during the first scan and fired by the next pass.
     catching_up: HashMap<String, DateTime<Utc>>,
-    /// Whether this Daemon has scanned yet. Downtime is a startup question:
-    /// only the first scan can tell missed Ticks from ordinary ones.
+    /// Whether this Daemon has loaded yet. Downtime is a startup question:
+    /// only the first load can tell missed Ticks from ordinary ones.
     has_scanned: bool,
+    /// Why the config could not be re-read at the last Reload, if it could
+    /// not. The previous config stays in force; this says so out loud.
+    config_error: Option<String>,
 }
 
 impl Daemon {
@@ -138,10 +196,10 @@ impl Daemon {
         // One state root serves the whole machine (ADR-0001); failing to
         // resolve it is fatal, never a silent fallback to somewhere else.
         let state_dir = config.state_dir()?;
-        let default_timeout = config.default_timeout()?;
+        let idle_timeout = config.idle_timeout()?;
         Ok(Self {
             config_path: None,
-            default_timeout,
+            idle_timeout,
             config,
             clock,
             zone,
@@ -154,10 +212,11 @@ impl Daemon {
             announced: HashMap::new(),
             catching_up: HashMap::new(),
             has_scanned: false,
+            config_error: None,
         })
     }
 
-    /// Re-reads this config file on every rescan, so `add` and `remove`
+    /// Re-reads this config file on every Reload, so `add` and `remove`
     /// reach a running Daemon without a restart.
     pub fn watching_config(mut self, path: PathBuf) -> Self {
         self.config_path = Some(path);
@@ -166,15 +225,6 @@ impl Daemon {
 
     pub fn state_dir(&self) -> &PathBuf {
         &self.state_dir
-    }
-
-    /// The directories being watched for Task files.
-    pub fn project_dirs(&self) -> Vec<PathBuf> {
-        self.config
-            .projects
-            .iter()
-            .map(|project| project.path.clone())
-            .collect()
     }
 
     /// How many Tasks are currently scheduled.
@@ -204,43 +254,64 @@ impl Daemon {
         }
     }
 
-    /// Rescans every Project and recomputes when each Task next fires.
-    pub async fn reload(&mut self) -> Result<()> {
+    /// Re-reads the config and every registered Task file, and recomputes
+    /// when each Task next fires.
+    ///
+    /// The only moment definitions change: nothing is watched, and no Tick
+    /// re-reads anything. Returns what it found, Task by Task, so whoever
+    /// asked for the Reload learns what it did.
+    pub async fn reload(&mut self) -> Result<Vec<ReloadEntry>> {
         let now = self.clock.now();
-        self.reload_config();
+        let config_error = self.reload_config();
         self.state = State::load_and_quarantine(&self.state_dir, now)?;
 
-        let scan = discovery::scan_all(&self.config);
+        let loaded = registry::load_all(&self.config);
         let present: std::collections::BTreeSet<String> =
-            scan.tasks.iter().map(|task| task.id.clone()).collect();
+            loaded.iter().map(|task| task.id.clone()).collect();
+        // Announcements are per file, not per name: during a name collision
+        // two files answer to one id, and keying by id would let each
+        // overwrite the other's notes and re-warn on every Reload.
+        let present_files: std::collections::BTreeSet<String> = loaded
+            .iter()
+            .map(|task| task.path.display().to_string())
+            .collect();
         let borrowed: std::collections::BTreeSet<&str> =
             present.iter().map(String::as_str).collect();
-        for id in self
-            .state
-            .prune_missing(&borrowed, &scan.reachable_projects)
-        {
-            tracing::info!(task = %id, "task file is gone; forgetting it");
+        for id in self.state.prune_missing(&borrowed) {
+            tracing::info!(task = %id, "task is no longer registered; forgetting it");
         }
         drop(borrowed);
 
-        // What each Task is already waiting for. A rescan happens every few
-        // seconds now, so recomputing a pending Tick would quietly step over
-        // it — only a Task whose definition actually changed is re-planned.
+        // What each Task is already waiting for. Recomputing a pending Tick
+        // would quietly step over it, so only a Task whose definition
+        // actually changed is re-planned.
         let carried: HashMap<String, (String, Option<Pending>)> = self
             .scheduled
             .drain(..)
             .map(|entry| (entry.id, (entry.digest, entry.pending)))
             .collect();
 
-        crate::crontab::write_all(&scan.tasks, &self.config);
-
+        let mut report = Vec::new();
         let mut scheduled = Vec::new();
         let mut broken = Vec::new();
         let mut disabled = Vec::new();
 
-        for task in scan.tasks {
-            self.state
-                .upsert(&task.id, &task.path.display().to_string());
+        for task in loaded {
+            let working_dir = task
+                .definition()
+                .map(|definition| definition.working_dir(&task.dir))
+                .unwrap_or_else(|| task.dir.clone());
+            // A file that lost a name collision writes nothing: the state row
+            // under that name — its history, its digest, its Skips — belongs
+            // to the file that claimed the name first, and letting the loser
+            // upsert would file the winner's past under the wrong path.
+            if !task.duplicate {
+                self.state.upsert(
+                    &task.id,
+                    &task.path.display().to_string(),
+                    &working_dir.display().to_string(),
+                );
+            }
 
             // Never blocked, never quiet — but said once per change, not
             // once per scan: rescans are frequent, and a warning repeated
@@ -255,13 +326,31 @@ impl Daemon {
             if let TaskHealth::Broken { error, .. } = &task.health {
                 notes.push(format!("broken, will not run: {error}"));
             }
-            let unheard = self.announced.get(&task.id) != Some(&notes);
+            let file = task.path.display().to_string();
+            let unheard = self.announced.get(&file) != Some(&notes);
             if unheard {
                 for note in &notes {
                     tracing::warn!(task = %task.id, "{note}");
                 }
             }
-            self.announced.insert(task.id.clone(), notes);
+            report.push(ReloadEntry {
+                id: task.id.clone(),
+                path: task.path.display().to_string(),
+                status: match &task.health {
+                    TaskHealth::Broken { .. } => ReloadStatus::Broken,
+                    TaskHealth::Ready { definition, .. } if definition.disabled => {
+                        ReloadStatus::Disabled
+                    }
+                    TaskHealth::Ready { .. } => ReloadStatus::Ready,
+                },
+                error: match &task.health {
+                    TaskHealth::Broken { error, .. } => Some(error.clone()),
+                    TaskHealth::Ready { .. } => None,
+                },
+                warnings: task.warnings().to_vec(),
+                novelty: task.novelty(self.state.last_run_digest(&task.id)).note(),
+            });
+            self.announced.insert(file, notes);
 
             match task.health {
                 TaskHealth::Ready { definition, agent } if definition.disabled => {
@@ -281,15 +370,16 @@ impl Daemon {
                     let pending = match unchanged {
                         Some((_, pending)) => *pending,
                         None => self
-                            .first_tick(&task.id, &definition, now)
+                            .first_tick(&task.id, &definition, &task.digest, now)
                             .map(|tick| self.plan(&task.id, &definition, tick)),
                     };
                     scheduled.push(Scheduled {
                         digest: task.digest,
+                        mtime: task.mtime,
                         pending,
                         path: task.path,
                         id: task.id,
-                        project_dir: task.project_dir,
+                        dir: task.dir,
                         definition: *definition,
                         agent,
                     });
@@ -302,7 +392,8 @@ impl Daemon {
             }
         }
 
-        self.announced.retain(|id, _| present.contains(id));
+        self.announced
+            .retain(|file, _| present_files.contains(file));
         scheduled.sort_by(|a, b| a.id.cmp(&b.id));
         self.scheduled = scheduled;
         broken.sort();
@@ -312,22 +403,31 @@ impl Daemon {
         self.has_scanned = true;
 
         self.state.save(&self.state_dir)?;
-        Ok(())
+        self.config_error = config_error;
+        report.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(report)
+    }
+
+    /// What the last Reload made of the config file, if it could not read it.
+    pub fn config_error(&self) -> Option<&str> {
+        self.config_error.as_deref()
     }
 
     /// Picks up edits to the config file. A config that no longer parses is
     /// reported and ignored: the Daemon keeps running what it already knows
-    /// rather than forgetting every Project over a typo.
-    fn reload_config(&mut self) {
-        let Some(path) = self.config_path.clone() else {
-            return;
-        };
+    /// rather than forgetting every Task over a typo.
+    fn reload_config(&mut self) -> Option<String> {
+        let path = self.config_path.clone()?;
         match Config::load(&path) {
             Ok(mut config) => {
                 config.state_dir = self.config.state_dir.clone();
                 self.config = config;
+                None
             }
-            Err(error) => tracing::error!("keeping the previous config: {error:#}"),
+            Err(error) => {
+                tracing::error!("keeping the previous config: {error:#}");
+                Some(format!("{error:#}"))
+            }
         }
     }
 
@@ -341,8 +441,20 @@ impl Daemon {
         &self,
         id: &str,
         definition: &TaskDefinition,
+        digest: &str,
         now: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
+        // A One-shot with no moment of its own runs as soon as the Daemon
+        // takes it in, and is then Completed. Its digest is what re-arms it:
+        // the definition that last ran is the one already answered, so an
+        // edit — and only an edit — gives it something to do again.
+        if matches!(definition.schedule, crate::schedule::Schedule::Once) {
+            return match self.state.last_run_digest(id) {
+                Some(ran) if ran == digest => None,
+                _ => Some(now),
+            };
+        }
+
         // A One-shot that already answered its moment is Completed; only a
         // new moment in the file gives it something to do again.
         if let Some(moment) = definition.schedule.one_shot_at()
@@ -496,6 +608,10 @@ impl Daemon {
         self.catching_up.clear();
 
         let answered_any = !due.is_empty();
+        // Tasks whose file changed out from under them mid-pass. Collected
+        // rather than removed on the spot: `due` holds indices into
+        // `self.scheduled`, and removing one would invalidate the rest.
+        let mut withdrawn: Vec<usize> = Vec::new();
 
         for (index, tick) in due {
             let id = self.scheduled[index].id.clone();
@@ -539,10 +655,56 @@ impl Daemon {
                 continue;
             }
 
+            // Last thing before the Agent starts: the file may have been
+            // fixed, switched off, or broken since this Tick was planned.
+            // After the pause and overlap checks, so a Tick that was never
+            // going to run does no I/O.
+            // Withdrawn cannot run in the form it now has, so a Reload has to
+            // say what it became. Rearmed is still a Task — just not for this
+            // Tick — and keeps the schedule the Refresh gave it.
+            let (skipped, withdraw) = match self.refresh(index, Some(tick)) {
+                Refreshed::Unchanged => (None, false),
+                Refreshed::Adopted => {
+                    tracing::info!(task = %id, "definition changed since it was loaded; running the new one");
+                    (None, false)
+                }
+                Refreshed::Withdrawn(why) => (Some(why), true),
+                Refreshed::Rearmed(why) => (Some(why), false),
+            };
+            if let Some(why) = skipped {
+                tracing::warn!(task = %id, scheduled_for = %tick, "skipped: {why}");
+                self.state.record_skip(
+                    &id,
+                    Skip::DefinitionChanged {
+                        scheduled_for: tick,
+                        recorded_at: now,
+                        detail: why,
+                    },
+                );
+                if withdraw {
+                    withdrawn.push(index);
+                }
+                continue;
+            }
+
             if let Err(error) = self.start_run(index, Some(tick), None) {
                 tracing::error!(task = %id, "run failed to start: {error:#}");
             }
         }
+
+        // Removed after the pass, highest index first, so the indices the
+        // loop was holding stayed valid while it ran.
+        withdrawn.sort_unstable();
+        withdrawn.dedup();
+        for index in withdrawn.into_iter().rev() {
+            let entry = self.scheduled.remove(index);
+            self.broken.push((
+                entry.id,
+                "withdrawn at its fire time; run `openroutine reload`".to_string(),
+                Some(entry.definition.description),
+            ));
+        }
+        self.broken.sort();
 
         // One save for the whole pass, after every Tick in it has been
         // answered. Saving as soon as the first Run started used to lose the
@@ -599,19 +761,91 @@ impl Daemon {
         self.scheduled[index].pending = pending.map(|tick| self.plan(&id, &definition, tick));
     }
 
-    /// How many Runs this Task keeps: its Project's setting, else the
-    /// global one.
-    fn retention_for(&self, task_id: &str) -> usize {
-        task_id
-            .split_once('/')
-            .and_then(|(project, _)| {
-                self.config
-                    .projects
-                    .iter()
-                    .find(|candidate| candidate.resolved_name() == project)
-            })
-            .and_then(|project| project.max_runs_per_task)
-            .unwrap_or_else(|| self.config.max_runs_per_task())
+    /// How many Runs each Task keeps.
+    fn retention_for(&self) -> usize {
+        self.config.max_runs_per_task()
+    }
+
+    /// Re-reads one Task's own file, moments before it would run.
+    ///
+    /// The only place a definition changes outside a Reload, and deliberately
+    /// the narrowest one: this file, on this path, for this Run. Nothing is
+    /// watched, no timer fires, no other Task is touched, and the config is
+    /// not re-read — registering and unregistering stay a Reload's business.
+    ///
+    /// mtime is only a pre-filter. A file whose mtime moved is read and
+    /// digested, and only a changed digest counts: `git checkout` and `touch`
+    /// move mtime with identical content, and treating that as a change would
+    /// re-arm every cron-less One-shot on a branch switch.
+    fn refresh(&mut self, index: usize, tick: Option<DateTime<Utc>>) -> Refreshed {
+        let (path, known_mtime, known_digest) = {
+            let entry = &self.scheduled[index];
+            (entry.path.clone(), entry.mtime, entry.digest.clone())
+        };
+
+        let mtime = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok();
+        // Absent on either side means "cannot tell", which is a reason to
+        // read, not a reason to assume.
+        if let (Some(now), Some(then)) = (mtime, known_mtime)
+            && now == then
+        {
+            return Refreshed::Unchanged;
+        }
+
+        let loaded = registry::load_one(&path, &self.config);
+        self.scheduled[index].mtime = loaded.mtime;
+        if loaded.digest == known_digest {
+            // Touched, not edited.
+            return Refreshed::Unchanged;
+        }
+
+        let (definition, agent) = match loaded.health {
+            TaskHealth::Ready { definition, agent } => (*definition, agent),
+            TaskHealth::Broken { error, .. } => {
+                return Refreshed::Withdrawn(format!("its definition no longer loads: {error}"));
+            }
+        };
+        if definition.disabled {
+            return Refreshed::Withdrawn("it was disabled in its own file".to_string());
+        }
+        // Identity is a registry-level change: a new id can collide with
+        // another registration and would strand this one's run history, and
+        // the fire path is the wrong place to settle that.
+        if definition.id != self.scheduled[index].id {
+            return Refreshed::Withdrawn(format!(
+                "it renamed itself to {:?}; run `openroutine reload`",
+                definition.id
+            ));
+        }
+
+        // A One-shot's moment is its identity. If the author moved it before
+        // it arrived, firing at the old one would be plainly wrong — so the
+        // Tick is withdrawn and the Task re-armed at the moment it now names.
+        let moment_moved = tick.is_some_and(|tick| {
+            definition
+                .schedule
+                .one_shot_at()
+                .is_some_and(|moment| moment != tick)
+        });
+
+        let entry = &mut self.scheduled[index];
+        entry.digest = loaded.digest;
+        entry.definition = definition;
+        entry.agent = agent;
+        entry.dir = loaded.dir;
+
+        if moment_moved {
+            let (id, definition) = (entry.id.clone(), entry.definition.clone());
+            let now = self.clock.now();
+            self.scheduled[index].pending = self
+                .first_tick(&id, &definition, &self.scheduled[index].digest.clone(), now)
+                .map(|tick| self.plan(&id, &definition, tick));
+            return Refreshed::Rearmed("its moment moved before it arrived".to_string());
+        }
+
+        Refreshed::Adopted
     }
 
     /// Pairs a Tick with the moment it will actually fire.
@@ -680,6 +914,37 @@ impl Daemon {
             return FireOutcome::Paused;
         }
 
+        // A Fire is a Run about to start, so it Refreshes like any other —
+        // "I edited it, then fired it" is the commonest way to meet this at
+        // all. There is no Tick here, so a One-shot's moment cannot be the
+        // thing that moved.
+        match self.refresh(index, None) {
+            Refreshed::Unchanged => {}
+            Refreshed::Adopted => {
+                tracing::info!(task = %task_id, "definition changed since it was loaded; firing the new one");
+            }
+            // No Tick was passed, so `refresh` has no moment to compare against
+            // and never re-arms; only a Withdrawal can come back.
+            Refreshed::Rearmed(why) | Refreshed::Withdrawn(why) => {
+                tracing::warn!(task = %task_id, "refused to fire: {why}");
+                let entry = self.scheduled.remove(index);
+                let disabled = entry.definition.disabled;
+                let description = entry.definition.description;
+                if disabled {
+                    self.disabled.push((entry.id, description));
+                    self.disabled.sort();
+                    return FireOutcome::Disabled;
+                }
+                self.broken.push((
+                    entry.id,
+                    format!("withdrawn at its fire time: {why}"),
+                    Some(description),
+                ));
+                self.broken.sort();
+                return FireOutcome::Failed(why);
+            }
+        }
+
         match self.start_run(index, None, context) {
             Ok(run_id) => {
                 if let Err(error) = self.state.save(&self.state_dir) {
@@ -719,7 +984,7 @@ impl Daemon {
                 description: entry.definition.description.clone(),
                 schedule: entry.definition.schedule.expression(),
                 path: entry.path.display().to_string(),
-                one_shot: entry.definition.schedule.one_shot_at().is_some(),
+                one_shot: entry.definition.schedule.is_one_shot(),
                 next_tick: entry.pending.map(|pending| pending.tick),
                 next_fire_at: entry.pending.map(|pending| pending.fire_at),
             })
@@ -765,9 +1030,9 @@ impl Daemon {
             Some(text) => crate::fire::with_context(&task.definition.prompt, text),
             None => task.definition.prompt.clone(),
         };
-        let working_dir = task.definition.working_dir(&task.project_dir);
+        let working_dir = task.definition.working_dir(&task.dir);
 
-        // The Agent was resolved and checked when the Task was scanned; a
+        // The Agent was resolved and checked when the Task was loaded; a
         // Task pointing at a missing one is Broken and never reaches here.
         let agent_name = task.agent.clone();
         let template = self
@@ -789,7 +1054,7 @@ impl Daemon {
             &task.definition.environment(&self.config.env),
         );
 
-        let timeout = task.definition.timeout.unwrap_or(self.default_timeout);
+        let idle_timeout = self.idle_timeout;
 
         let started_at = self.clock.now();
         let (run_id, run_dir) = run::create_run_dir(&self.state_dir, &task_id, started_at)?;
@@ -850,9 +1115,19 @@ impl Daemon {
             .with_context(|| format!("spawning agent for {task_id}"))?;
         let group = child.id().map(|pid| pid as i32);
 
+        // The Run's own stopwatch. Real elapsed time, shared by the thread
+        // draining the output and the task supervising the Agent, so the two
+        // agree on how long it has been quiet.
+        let running_since = std::time::Instant::now();
+        let activity = run::Activity::default();
+
         let cap = self.config.max_log_bytes();
-        let capture =
-            tokio::task::spawn_blocking(move || run::capture_output(reader, &log_path, cap));
+        let capture = {
+            let activity = activity.clone();
+            tokio::task::spawn_blocking(move || {
+                run::capture_output(reader, &log_path, cap, running_since, activity)
+            })
+        };
 
         let completes = self.scheduled[index].definition.schedule.one_shot_at();
         if let Some(entry) = self.state.task_mut(&task_id) {
@@ -864,7 +1139,7 @@ impl Daemon {
             entry.completed_for = completes;
         }
 
-        let keep = self.retention_for(&task_id);
+        let keep = self.retention_for();
         match run::prune_runs(&self.state_dir, &task_id, keep) {
             Ok(0) => {}
             Ok(pruned) => {
@@ -884,7 +1159,7 @@ impl Daemon {
                 tracing::warn!(task = %record.task_id, "writing prompt to stdin: {error}");
             }
 
-            match await_child(&mut child, group, timeout).await {
+            match await_child(&mut child, group, idle_timeout, running_since, &activity).await {
                 Outcome::Exited(status) => {
                     record.exit_code = status.code();
                     record.status = if status.success() {
@@ -894,7 +1169,10 @@ impl Daemon {
                     };
                 }
                 Outcome::TimedOut => {
-                    tracing::warn!(task = %record.task_id, "timed out; killed the process group");
+                    tracing::warn!(
+                        task = %record.task_id,
+                        "went quiet for too long; killed the process group"
+                    );
                     record.status = RunStatus::TimedOut;
                 }
                 Outcome::Failed(error) => {
@@ -951,17 +1229,24 @@ const KILL_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long to keep draining output after the Agent itself has exited.
 const CAPTURE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Waits for the Agent, enforcing its timeout.
+/// Waits for the Agent, ending it if it goes quiet for too long.
 ///
-/// Timeouts are measured against real elapsed time, not the injected clock:
-/// a Run's budget is about how long a process may spend, which is a different
-/// question from when the schedule says it should start.
+/// The budget is measured from the Agent's last output, not from the start of
+/// the Run: work that is visibly progressing is never interrupted, however
+/// long it takes, while a Run that has hung — a stuck network read, a tool
+/// waiting on input nobody will type — is reaped instead of held forever.
+///
+/// Measured against real elapsed time, not the injected clock: how long a
+/// process has been silent is a different question from when the schedule
+/// said it should start.
 async fn await_child(
     child: &mut tokio::process::Child,
     group: Option<i32>,
-    timeout: crate::task::Timeout,
+    idle_timeout: crate::task::Timeout,
+    started: std::time::Instant,
+    activity: &run::Activity,
 ) -> Outcome {
-    let budget = match timeout {
+    let budget = match idle_timeout {
         crate::task::Timeout::Never => None,
         crate::task::Timeout::After(duration) => duration.to_std().ok(),
     };
@@ -973,14 +1258,22 @@ async fn await_child(
         };
     };
 
-    tokio::select! {
-        finished = child.wait() => match finished {
-            Ok(status) => Outcome::Exited(status),
-            Err(error) => Outcome::Failed(error),
-        },
-        _ = tokio::time::sleep(budget) => {
+    loop {
+        // Sleep only as far as the current deadline. If the Agent spoke while
+        // we waited, the deadline has moved and the next pass sleeps again —
+        // so there is no polling interval to tune, and no drift.
+        let quiet_for = activity.quiet_for(started.elapsed());
+        let Some(remaining) = budget.checked_sub(quiet_for) else {
             terminate(child, group).await;
-            Outcome::TimedOut
+            return Outcome::TimedOut;
+        };
+
+        tokio::select! {
+            finished = child.wait() => return match finished {
+                Ok(status) => Outcome::Exited(status),
+                Err(error) => Outcome::Failed(error),
+            },
+            _ = tokio::time::sleep(remaining) => continue,
         }
     }
 }

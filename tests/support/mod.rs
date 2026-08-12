@@ -15,6 +15,21 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+/// Gives a Task file a `name:` when its contents don't state one.
+///
+/// Identity is mandatory in the file, but most tests are about something
+/// else; this keeps their fixtures about the thing they test.
+fn with_name(contents: &str, name: &str) -> String {
+    let has_name = contents
+        .lines()
+        .take_while(|line| line.trim() != "---" || contents.starts_with("---\n"))
+        .any(|line| line.trim_start().starts_with("name:"));
+    match contents.strip_prefix("---\n") {
+        Some(rest) if !has_name => format!("---\nname: {name}\n{rest}"),
+        _ => contents.to_string(),
+    }
+}
+
 pub fn at(iso: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(iso)
         .unwrap_or_else(|e| panic!("bad timestamp {iso:?}: {e}"))
@@ -41,6 +56,12 @@ pub struct TestEnv {
     /// Every sandbox gets its own API port, so daemons in parallel tests
     /// never collide over the default one.
     port: u16,
+    /// The Task files registered so far, in registration order — which is
+    /// what the config lists, and what decides a name collision.
+    registered: std::cell::RefCell<Vec<PathBuf>>,
+    /// The last config written, so registering a Task afterwards can rewrite
+    /// it in the same shape.
+    config_shape: std::cell::RefCell<Option<(String, String)>>,
 }
 
 impl TestEnv {
@@ -49,6 +70,8 @@ impl TestEnv {
         let env = Self {
             root,
             port: free_port(),
+            registered: std::cell::RefCell::new(Vec::new()),
+            config_shape: std::cell::RefCell::new(None),
         };
         fs::create_dir_all(env.project_dir()).unwrap();
         fs::create_dir_all(env.state_dir()).unwrap();
@@ -137,6 +160,35 @@ printf 'stub agent ran\n'
 
     /// A stub Agent that forks a child which outlives it, then hangs. Used to
     /// prove a timeout kills the whole process group, not just the Agent.
+    /// A stub Agent that keeps talking: a line every 300ms for `seconds`,
+    /// then a clean exit. Long-running but never quiet, which is exactly the
+    /// Run an idle timeout must leave alone.
+    pub fn write_chatty_stub_agent(&self, seconds: u32) {
+        let script = format!(
+            r#"#!/bin/sh
+seq=$(ls {record_dir}/*.args 2>/dev/null | wc -l | tr -d ' ')
+record="$(mktemp {record_dir}/inv-$(printf '%04d' "$seq")-XXXXXX)"
+for arg in "$@"; do printf '%s\0' "$arg"; done > "$record.args"
+pwd > "$record.cwd"
+env > "$record.env"
+: > "$record.stdin"
+ticks=$(( {seconds} * 10 / 3 ))
+i=0
+while [ "$i" -lt "$ticks" ]; do
+  printf 'still working %s\n' "$i"
+  sleep 0.3
+  i=$(( i + 1 ))
+done
+printf 'stub agent ran\n'
+"#,
+            record_dir = self.record_dir().display(),
+            seconds = seconds,
+        );
+        let path = self.stub_path();
+        fs::write(&path, script).unwrap();
+        make_executable(&path);
+    }
+
     pub fn write_forking_stub_agent(&self, marker: &Path) {
         let script = format!(
             r#"#!/bin/sh
@@ -198,11 +250,51 @@ done
         fs::write(self.gate_path(), "go").unwrap();
     }
 
+    /// Writes a Task file and registers it.
+    ///
+    /// The `name:` frontmatter key is injected when the contents don't carry
+    /// one, so a test that cares about scheduling can say only what it is
+    /// testing — and a test that cares about names can still state its own.
     pub fn write_task(&self, name: &str, contents: &str) -> PathBuf {
-        let path = self.project_dir().join(format!("{name}.cron.md"));
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, contents).unwrap();
+        let path = self.write_unregistered_task(name, contents);
+        self.register(&path);
         path
+    }
+
+    /// Writes a Task file without registering it: what `add` is given.
+    pub fn write_unregistered_task(&self, name: &str, contents: &str) -> PathBuf {
+        let path = self.project_dir().join(format!("{name}.md"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, with_name(contents, name)).unwrap();
+        path
+    }
+
+    /// Registers a Task file, rewriting the config if one exists yet.
+    pub fn register(&self, path: &Path) {
+        self.registered.borrow_mut().push(path.to_path_buf());
+        self.rewrite_config();
+    }
+
+    /// Unregisters a Task file, leaving it on disk.
+    pub fn unregister(&self, path: &Path) {
+        self.registered.borrow_mut().retain(|other| other != path);
+        self.rewrite_config();
+    }
+
+    /// The registered paths, as the config lists them.
+    pub fn registered(&self) -> Vec<PathBuf> {
+        self.registered.borrow().clone()
+    }
+
+    /// Rewrites the config in place so it names exactly what is registered
+    /// now — tests commonly write the config before their Tasks.
+    fn rewrite_config(&self) {
+        // Cloned and released before writing: `write_config_toml` takes the
+        // same cell mutably.
+        let shape = self.config_shape.borrow().clone();
+        if let Some((cmd, preamble)) = shape {
+            self.write_config_toml(&cmd, &preamble);
+        }
     }
 
     /// A config whose only agent is the stub, invoked with the prompt as argv.
@@ -223,17 +315,23 @@ done
     }
 
     fn write_config_toml(&self, cmd: &str, preamble: &str) -> PathBuf {
+        *self.config_shape.borrow_mut() = Some((cmd.to_string(), preamble.to_string()));
+        let tasks = self
+            .registered
+            .borrow()
+            .iter()
+            .map(|path| format!("  {:?},\n", path.display().to_string()))
+            .collect::<String>();
+        // Top-level keys first: a preamble that opens a table (`[env]`) would
+        // otherwise swallow whatever followed it.
         let config = format!(
             "bind = \"127.0.0.1:{port}\"\n\
+             tasks = [\n{tasks}]\n\
              {preamble}\
-             [[projects]]\n\
-             path = {project:?}\n\
-             name = \"proj\"\n\
              \n\
              [agents.stub]\n\
              cmd = {cmd:?}\n",
             port = self.port,
-            project = self.project_dir().display().to_string(),
             cmd = cmd,
         );
         let path = self.config_path();
@@ -241,28 +339,12 @@ done
         path
     }
 
-    /// Creates another directory under the sandbox, ready to register.
-    pub fn add_project(&self, relative: &str) -> PathBuf {
+    /// Creates another directory under the sandbox, for Tasks that live
+    /// somewhere other than the default one.
+    pub fn add_dir(&self, relative: &str) -> PathBuf {
         let path = self.root.path().join(relative);
         fs::create_dir_all(&path).unwrap();
         path
-    }
-
-    /// A config registering both the default Project and `other`.
-    pub fn write_config_with_projects(&self) -> PathBuf {
-        let other = self.add_project("other");
-        let config = format!(
-            "bind = \"127.0.0.1:{port}\"\n\
-             [[projects]]\npath = {proj:?}\nname = \"proj\"\n\n\
-             [[projects]]\npath = {other:?}\nname = \"other\"\n\n\
-             [agents.stub]\ncmd = {cmd:?}\n",
-            port = self.port,
-            proj = self.project_dir().display().to_string(),
-            other = other.display().to_string(),
-            cmd = format!("{} --run {{prompt}}", self.stub_path().display()),
-        );
-        fs::write(self.config_path(), config).unwrap();
-        self.config_path()
     }
 
     /// The port this sandbox's API listens on.
@@ -282,10 +364,10 @@ done
         openroutine::token::load_or_create(&self.state_dir()).unwrap()
     }
 
-    /// A config with agents but no Projects registered yet.
-    pub fn write_config_with_no_projects(&self) -> PathBuf {
+    /// A config with agents but no Tasks registered yet.
+    pub fn write_config_with_no_tasks(&self) -> PathBuf {
         let config = format!(
-            "bind = \"127.0.0.1:{port}\"\n[agents.stub]\ncmd = {cmd:?}\n",
+            "bind = \"127.0.0.1:{port}\"\ntasks = []\n[agents.stub]\ncmd = {cmd:?}\n",
             port = self.port,
             cmd = format!("{} --run {{prompt}}", self.stub_path().display()),
         );
@@ -293,15 +375,15 @@ done
         self.config_path()
     }
 
-    /// The standard config with an extra key inside the Project entry.
-    pub fn write_config_with_extra_project_key(&self, extra: &str) -> PathBuf {
+    /// A config in the shape openroutine used before Tasks were registered
+    /// one file at a time.
+    pub fn write_legacy_projects_config(&self) -> PathBuf {
         let config = format!(
             "bind = \"127.0.0.1:{port}\"\n\
-             [[projects]]\npath = {proj:?}\nname = \"proj\"\n{extra}\n\
+             [[projects]]\npath = {proj:?}\nname = \"proj\"\n\n\
              [agents.stub]\ncmd = {cmd:?}\n",
             port = self.port,
             proj = self.project_dir().display().to_string(),
-            extra = extra,
             cmd = format!("{} --run {{prompt}}", self.stub_path().display()),
         );
         fs::write(self.config_path(), config).unwrap();
@@ -438,10 +520,7 @@ done
 
     /// Run directories for a task, oldest first.
     pub fn run_dirs(&self, task_id: &str) -> Vec<PathBuf> {
-        let (project, name) = task_id
-            .split_once('/')
-            .expect("task id is <project>/<name>");
-        let dir = self.state_dir().join("runs").join(project).join(name);
+        let dir = self.state_dir().join("runs").join(task_id);
         let Ok(entries) = fs::read_dir(&dir) else {
             return Vec::new();
         };

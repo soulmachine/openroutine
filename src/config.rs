@@ -1,7 +1,8 @@
-//! Daemon configuration: which Projects to watch, and what an Agent is.
+//! Daemon configuration: which Task files are registered, and what an Agent
+//! is.
 //!
-//! Human-owned and hand-editable. Which directories to watch defines
-//! behaviour, so it lives here rather than in machine state.
+//! Human-owned and hand-editable. Which files are Tasks defines behaviour, so
+//! it lives here rather than in machine state.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -10,7 +11,13 @@ use std::path::{Path, PathBuf};
 
 /// An unattended Agent that hangs is the worst failure mode, so Runs are
 /// bounded unless the author says otherwise.
-const DEFAULT_TIMEOUT: chrono::Duration = chrono::Duration::hours(1);
+///
+/// How long a Run may go without its Agent saying anything before it is
+/// ended. Measured from the last output, never from the start: work that is
+/// visibly progressing is never interrupted, however long it takes, while a
+/// Run that has hung is reaped rather than held forever. Claude Desktop reaps
+/// its own scheduled runs on the same principle, at a comparable 16 minutes.
+const DEFAULT_IDLE_TIMEOUT: chrono::Duration = chrono::Duration::minutes(15);
 /// Enough history to explain recent behaviour; not enough to fill a disk.
 const DEFAULT_MAX_RUNS_PER_TASK: usize = 50;
 /// Enough to debug a Run; not enough to fill a disk.
@@ -24,8 +31,10 @@ pub struct Config {
     /// XDG state directory and only set directly by callers that need to.
     #[serde(skip)]
     pub state_dir: Option<PathBuf>,
+    /// Every registered Task file, by absolute path. Written by
+    /// `openroutine add`; hand-editable like the rest of this file.
     #[serde(default)]
-    pub projects: Vec<ProjectConfig>,
+    pub tasks: Vec<PathBuf>,
     #[serde(default)]
     pub agents: BTreeMap<String, AgentConfig>,
     /// Environment handed to every Run, layered over the login shell's own
@@ -42,9 +51,11 @@ pub struct Config {
     /// How much of a Run's output is kept before the log is truncated.
     #[serde(default)]
     pub max_log_bytes: Option<u64>,
-    /// The timeout for Tasks that name none.
+    /// How long a Run may go without output before it is ended. Machine-wide:
+    /// a Task cannot set its own, because how long to wait on a hung process is
+    /// an operator's judgment, not an author's.
     #[serde(default)]
-    pub default_timeout: Option<String>,
+    pub idle_timeout: Option<String>,
     /// Where the local API listens. Loopback by default; widening it is
     /// possible, discouraged, and never removes the token requirement.
     #[serde(default)]
@@ -57,22 +68,6 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProjectConfig {
-    pub path: PathBuf,
-    /// Unique short name; defaults to the directory's basename.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// Whether to keep a `CRONTAB.md` at this Project's root. Openroutine
-    /// never insists on writing into someone's repository.
-    #[serde(default)]
-    pub crontab_md: Option<bool>,
-    /// Runs kept per Task here, overriding the global setting.
-    #[serde(default)]
-    pub max_runs_per_task: Option<usize>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     pub cmd: String,
 }
@@ -81,50 +76,45 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config at {}", path.display()))?;
+
+        // A config from before Tasks were registered one file at a time would
+        // otherwise fail as an unknown key, which explains nothing. Say what
+        // changed and what to do about it instead.
+        if let Ok(table) = raw.parse::<toml::Table>()
+            && table.contains_key("projects")
+        {
+            anyhow::bail!(
+                "the config at {} registers `[[projects]]` directories, which openroutine no \
+                 longer scans; register each task file instead — `openroutine add <file.md>` — \
+                 and delete the `[[projects]]` entries",
+                path.display()
+            );
+        }
+
         let config: Config = toml::from_str(&raw)
             .with_context(|| format!("parsing config at {}", path.display()))?;
 
         // Resolved eagerly so a bad value fails here, in front of whoever
         // just edited the file, rather than at 2am inside a Run.
         config
-            .default_timeout()
+            .idle_timeout()
             .with_context(|| format!("in config at {}", path.display()))?;
 
-        let mut seen: BTreeMap<String, &Path> = BTreeMap::new();
-        for project in &config.projects {
-            let name = project.resolved_name();
-            // A `/` would make the Task id ambiguous, since ids are
-            // `<project>/<task>`.
-            if name.is_empty() || name.contains('/') {
+        // A relative entry would be read against whatever directory the
+        // Daemon happens to be started in — under a service manager, `/`.
+        // `add` always writes absolute paths; a hand edit must too.
+        for task in &config.tasks {
+            if !task.is_absolute() {
                 anyhow::bail!(
-                    "project name {name:?} ({}) may not be empty or contain `/`",
-                    project.path.display()
-                );
-            }
-            if let Some(other) = seen.insert(name.clone(), &project.path) {
-                anyhow::bail!(
-                    "two projects are both called {name:?} ({} and {}); \
-                     give one of them a `name` of its own",
-                    other.display(),
-                    project.path.display()
+                    "registered task {} must be an absolute path: the daemon's working \
+                     directory is not yours",
+                    task.display()
                 );
             }
         }
 
-        for keep in std::iter::once(config.max_runs_per_task)
-            .chain(
-                config
-                    .projects
-                    .iter()
-                    .map(|project| project.max_runs_per_task),
-            )
-            .flatten()
-        {
-            if keep == 0 {
-                anyhow::bail!(
-                    "`max_runs_per_task` must be at least 1; a Task keeps its current Run"
-                );
-            }
+        if config.max_runs_per_task == Some(0) {
+            anyhow::bail!("`max_runs_per_task` must be at least 1; a Task keeps its current Run");
         }
 
         for (name, agent) in &config.agents {
@@ -158,14 +148,14 @@ impl Config {
         self.max_log_bytes.unwrap_or(DEFAULT_MAX_LOG_BYTES)
     }
 
-    /// The timeout a Task inherits when it names none.
-    pub fn default_timeout(&self) -> Result<crate::task::Timeout> {
-        match &self.default_timeout {
+    /// How long a Run may go without output before it is ended.
+    pub fn idle_timeout(&self) -> Result<crate::task::Timeout> {
+        match &self.idle_timeout {
             Some(text) if text.trim() == "none" => Ok(crate::task::Timeout::Never),
             Some(text) => crate::task::parse_duration(text)
                 .map(crate::task::Timeout::After)
-                .map_err(|reason| anyhow::anyhow!("`default_timeout`: {reason}")),
-            None => Ok(crate::task::Timeout::After(DEFAULT_TIMEOUT)),
+                .map_err(|reason| anyhow::anyhow!("`idle_timeout`: {reason}")),
+            None => Ok(crate::task::Timeout::After(DEFAULT_IDLE_TIMEOUT)),
         }
     }
 
@@ -194,18 +184,6 @@ impl Config {
                 "unknown agent {name:?}: the config defines no agent by that name"
             ))
         }
-    }
-}
-
-impl ProjectConfig {
-    /// The Project's name: explicit, else the directory's basename.
-    pub fn resolved_name(&self) -> String {
-        self.name.clone().unwrap_or_else(|| {
-            self.path
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| "project".to_string())
-        })
     }
 }
 

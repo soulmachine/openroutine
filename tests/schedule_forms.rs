@@ -17,7 +17,8 @@ const MANUAL: &str = "---\ndescription: On demand only\nagent: stub\n---\n\nping
 async fn daemon_at(env: &TestEnv, now: &str) -> (Daemon, ManualClock) {
     let clock = ManualClock::new(at(now));
     let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
-        .expect("daemon should build");
+        .expect("daemon should build")
+        .watching_config(env.config_path());
     daemon.reload().await.expect("reload should succeed");
     (daemon, clock)
 }
@@ -105,7 +106,7 @@ async fn a_one_shot_whose_moment_passed_while_the_daemon_was_down_does_not_run()
         env.calls().is_empty(),
         "no catch-up: a moment that passed unattended is recorded, not run"
     );
-    let skips = env.read_state()["recordedSkips"]["proj/once"].clone();
+    let skips = env.read_state()["recordedSkips"]["once"].clone();
     assert_eq!(skips[0]["reason"], "daemon-down", "{skips}");
 }
 
@@ -169,14 +170,14 @@ async fn catch_up_runs_the_most_recent_missed_cron_tick_only_once() {
         2,
         "one Run for the most recent miss, not one per missed Tick"
     );
-    let skips = env.read_state()["recordedSkips"]["proj/hourly"].clone();
+    let skips = env.read_state()["recordedSkips"]["hourly"].clone();
     assert_eq!(skips[0]["reason"], "daemon-down", "the rest are recorded");
 }
 
-// --- Manual -------------------------------------------------------------
+// --- One-shot with no stated moment -------------------------------------
 
 #[tokio::test]
-async fn a_task_with_no_schedule_is_healthy_and_never_ticks() {
+async fn a_task_with_no_schedule_runs_once_and_is_then_done() {
     let env = TestEnv::new();
     env.write_task("ondemand", MANUAL);
     env.write_config();
@@ -189,24 +190,69 @@ async fn a_task_with_no_schedule_is_healthy_and_never_ticks() {
     daemon.wait_for_running().await;
 
     assert_eq!(daemon.task_count(), 1, "it is a Task, not a mistake");
-    assert!(env.calls().is_empty(), "but nothing makes it run by itself");
+    assert_eq!(
+        env.calls().len(),
+        1,
+        "a task with no cron runs once, as soon as the daemon takes it in — \
+         and then never again on its own"
+    );
+}
+
+#[tokio::test]
+async fn editing_a_completed_one_shot_gives_it_something_to_do_again() {
+    let env = TestEnv::new();
+    env.write_task("ondemand", MANUAL);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:00:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+    assert_eq!(env.calls().len(), 1);
+
+    // Reloading an unchanged definition must not run it a second time.
+    daemon.reload().await.unwrap();
+    clock.set(at("2026-08-11T02:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+    assert_eq!(
+        env.calls().len(),
+        1,
+        "an unchanged one-shot stays completed"
+    );
+
+    // An edit is what re-arms it.
+    env.write_task(
+        "ondemand",
+        "---\ndescription: On demand only\nagent: stub\n---\n\npong\n",
+    );
+    daemon.reload().await.unwrap();
+    clock.set(at("2026-08-11T03:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(
+        env.calls().len(),
+        2,
+        "editing the definition is what asks for another run"
+    );
 }
 
 #[test]
-fn a_manual_task_lists_as_having_no_schedule() {
+fn a_task_with_no_schedule_lists_as_running_once() {
     let env = TestEnv::new();
     env.write_task("ondemand", MANUAL);
     env.write_config();
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/ondemand"), "{out}");
+    assert!(out.contains("ondemand"), "{out}");
     assert!(
         !out.to_lowercase().contains("broken"),
-        "no schedule is a choice, not a fault:\n{out}"
+        "no cron is a choice, not a fault:\n{out}"
     );
     assert!(
-        out.to_lowercase().contains("no schedule"),
+        out.to_lowercase().contains("once"),
         "and it should say so plainly:\n{out}"
     );
 }

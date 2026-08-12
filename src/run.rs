@@ -58,10 +58,9 @@ impl RunRecord {
     }
 }
 
-/// Where a Task's Runs live: `runs/<project>/<task>/`.
+/// Where a Task's Runs live: `runs/<name>/`.
 pub fn task_runs_dir(state_dir: &Path, task_id: &str) -> PathBuf {
-    let (project, name) = task_id.split_once('/').unwrap_or(("_", task_id));
-    state_dir.join(RUNS_DIR).join(project).join(name)
+    state_dir.join(RUNS_DIR).join(task_id)
 }
 
 /// Creates this Run's directory, deriving the id from its start instant and
@@ -122,11 +121,45 @@ pub fn log_header(record: &RunRecord) -> String {
     )
 }
 
+/// A Run's pulse: how far into the Run its Agent last said anything.
+///
+/// Written by the thread draining the output pipe, read by the supervisor
+/// deciding whether the Run has gone quiet. Milliseconds since the Run
+/// started, so both sides agree without sharing a clock.
+#[derive(Debug, Clone, Default)]
+pub struct Activity(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl Activity {
+    /// Records that the Agent produced output `since` the Run began.
+    pub fn seen(&self, since: std::time::Duration) {
+        self.0.store(
+            since.as_millis() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// How long the Agent had been quiet as of `elapsed` into the Run.
+    pub fn quiet_for(&self, elapsed: std::time::Duration) -> std::time::Duration {
+        let last = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        elapsed.saturating_sub(std::time::Duration::from_millis(last))
+    }
+}
+
 /// Copies a Run's output into its log, stopping at `cap` bytes.
 ///
 /// The pipe keeps draining past the cap so a chatty Agent never blocks on a
 /// full buffer; the excess is simply discarded, with one line saying so.
-pub fn capture_output(mut reader: std::io::PipeReader, log_path: &Path, cap: u64) -> Result<u64> {
+///
+/// Every read also stamps `activity`, including the reads past the cap: an
+/// Agent still talking is still working, whether or not we are keeping what
+/// it says.
+pub fn capture_output(
+    mut reader: std::io::PipeReader,
+    log_path: &Path,
+    cap: u64,
+    started: std::time::Instant,
+    activity: Activity,
+) -> Result<u64> {
     use std::io::{Read, Write};
 
     let mut log = std::fs::OpenOptions::new()
@@ -145,6 +178,7 @@ pub fn capture_output(mut reader: std::io::PipeReader, log_path: &Path, cap: u64
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error).context("reading agent output"),
         };
+        activity.seen(started.elapsed());
 
         let room = cap.saturating_sub(written) as usize;
         if room > 0 {
@@ -237,25 +271,20 @@ pub fn close_abandoned_runs(state_dir: &Path, finished_at: DateTime<Utc>) -> usi
     closed
 }
 
-/// Every `run.json` under `runs/<project>/<task>/<run>/`.
+/// Every `run.json` under `runs/<task>/<run>/`.
 fn walk_run_records(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    let Ok(projects) = std::fs::read_dir(root) else {
+    let Ok(tasks) = std::fs::read_dir(root) else {
         return found;
     };
-    for project in projects.flatten() {
-        let Ok(tasks) = std::fs::read_dir(project.path()) else {
+    for task in tasks.flatten() {
+        let Ok(runs) = std::fs::read_dir(task.path()) else {
             continue;
         };
-        for task in tasks.flatten() {
-            let Ok(runs) = std::fs::read_dir(task.path()) else {
-                continue;
-            };
-            for run in runs.flatten() {
-                let record = run.path().join(RUN_RECORD);
-                if record.is_file() {
-                    found.push(record);
-                }
+        for run in runs.flatten() {
+            let record = run.path().join(RUN_RECORD);
+            if record.is_file() {
+                found.push(record);
             }
         }
     }

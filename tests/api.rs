@@ -6,7 +6,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use support::{DaemonProcess, TestEnv};
 
-const MANUAL: &str = "---\ndescription: On demand\nagent: stub\n---\n\nping\n";
+// A schedule far enough out that nothing fires on its own during a
+// test: these are about firing on demand, not about the clock.
+const MANUAL: &str = "---\ndescription: On demand\ncron: \"0 4 1 1 *\"\nagent: stub\n---\n\nping\n";
 
 struct Served {
     /// Held for its Drop: the daemon is reaped even if a test panics.
@@ -101,9 +103,10 @@ fn every_endpoint_needs_the_token_including_reads() {
 
     for (method, path) in [
         ("GET", "/v1/tasks"),
-        ("GET", "/v1/tasks/proj/ondemand"),
-        ("GET", "/v1/tasks/proj/ondemand/runs"),
-        ("POST", "/v1/tasks/proj/ondemand/fire"),
+        ("GET", "/v1/tasks/ondemand"),
+        ("GET", "/v1/tasks/ondemand/runs"),
+        ("POST", "/v1/tasks/ondemand/fire"),
+        ("POST", "/v1/reload"),
     ] {
         let (code, body) = api.send(method, path, Some("not-the-token"), None);
         assert_eq!(code, 401, "{method} {path} should refuse: {body}");
@@ -114,7 +117,11 @@ fn every_endpoint_needs_the_token_including_reads() {
 #[test]
 fn the_task_list_says_what_is_scheduled() {
     let env = TestEnv::new();
-    env.write_task("ondemand", MANUAL);
+    // A One-shot whose moment has gone by: nothing further is coming.
+    env.write_task(
+        "ondemand",
+        "---\ndescription: On demand\nat: \"2020-01-01T09:00:00Z\"\nagent: stub\n---\n\nping\n",
+    );
     env.write_task(
         "nightly",
         "---\ndescription: Nightly\ncron: \"0 2 * * *\"\nagent: stub\n---\n\nping\n",
@@ -125,18 +132,12 @@ fn the_task_list_says_what_is_scheduled() {
     let tasks = body["tasks"].as_array().unwrap();
 
     assert_eq!(tasks.len(), 2, "{body}");
-    let manual = tasks
-        .iter()
-        .find(|task| task["id"] == "proj/ondemand")
-        .unwrap();
+    let finished = tasks.iter().find(|task| task["id"] == "ondemand").unwrap();
     assert!(
-        manual["nextFireAt"].is_null(),
-        "a Manual task has no next fire — null, never a placeholder: {manual}"
+        finished["nextFireAt"].is_null(),
+        "a completed one-shot has no next fire — null, never a placeholder: {finished}"
     );
-    let nightly = tasks
-        .iter()
-        .find(|task| task["id"] == "proj/nightly")
-        .unwrap();
+    let nightly = tasks.iter().find(|task| task["id"] == "nightly").unwrap();
     assert!(nightly["nextFireAt"].is_string(), "{nightly}");
 }
 
@@ -146,7 +147,7 @@ fn firing_a_task_starts_a_run_and_says_where_to_look() {
     env.write_task("ondemand", MANUAL);
     let api = serve(&env);
 
-    let (code, body) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    let (code, body) = api.send("POST", "/v1/tasks/ondemand/fire", None, None);
 
     assert_eq!(code, 202, "{body}");
     assert!(body["run_id"].is_string(), "{body}");
@@ -170,7 +171,7 @@ fn fired_context_reaches_the_agent_wrapped_and_labelled() {
 
     api.send(
         "POST",
-        "/v1/tasks/proj/ondemand/fire",
+        "/v1/tasks/ondemand/fire",
         None,
         Some(r#"{"text":"Sentry alert SEN-4521 fired in prod."}"#),
     );
@@ -202,7 +203,7 @@ fn an_oversized_payload_is_refused_rather_than_truncated() {
     let huge = "x".repeat(70_000);
     let (code, body) = api.send(
         "POST",
-        "/v1/tasks/proj/ondemand/fire",
+        "/v1/tasks/ondemand/fire",
         None,
         Some(&format!(r#"{{"text":"{huge}"}}"#)),
     );
@@ -218,10 +219,10 @@ fn firing_a_task_that_is_already_running_is_refused() {
     env.write_task("ondemand", MANUAL);
     let api = serve(&env);
 
-    let (first, _) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    let (first, _) = api.send("POST", "/v1/tasks/ondemand/fire", None, None);
     assert_eq!(first, 202);
 
-    let (second, body) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    let (second, body) = api.send("POST", "/v1/tasks/ondemand/fire", None, None);
     assert_eq!(second, 409, "{body}");
     assert_eq!(body["error"]["code"], "already_running", "{body}");
 
@@ -234,7 +235,7 @@ fn an_unknown_task_is_a_clean_not_found() {
     env.write_task("ondemand", MANUAL);
     let api = serve(&env);
 
-    let (code, body) = api.send("GET", "/v1/tasks/proj/ghost", None, None);
+    let (code, body) = api.send("GET", "/v1/tasks/ghost", None, None);
 
     assert_eq!(code, 404, "{body}");
     assert_eq!(body["error"]["code"], "no_such_task", "{body}");
@@ -246,20 +247,20 @@ fn run_history_and_logs_are_readable() {
     env.write_task("ondemand", MANUAL);
     let api = serve(&env);
 
-    api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    api.send("POST", "/v1/tasks/ondemand/fire", None, None);
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && env.calls().is_empty() {
         std::thread::sleep(Duration::from_millis(20));
     }
     std::thread::sleep(Duration::from_millis(300));
 
-    let runs = api.get("/v1/tasks/proj/ondemand/runs");
+    let runs = api.get("/v1/tasks/ondemand/runs");
     let listed = runs["runs"].as_array().unwrap();
     assert_eq!(listed.len(), 1, "{runs}");
     assert_eq!(listed[0]["trigger"], "fire", "{runs}");
 
     let run_id = listed[0]["runId"].as_str().unwrap();
-    let log = api.get(&format!("/v1/runs/proj/ondemand/{run_id}/log"));
+    let log = api.get(&format!("/v1/runs/ondemand/{run_id}/log"));
     assert!(
         log.as_str().unwrap().contains("stub agent ran"),
         "the log comes back as text: {log}"
@@ -272,7 +273,7 @@ fn an_empty_history_is_an_empty_list_not_a_null() {
     env.write_task("ondemand", MANUAL);
     let api = serve(&env);
 
-    let runs = api.get("/v1/tasks/proj/ondemand/runs");
+    let runs = api.get("/v1/tasks/ondemand/runs");
 
     assert_eq!(
         runs["runs"].as_array().map(Vec::len),
@@ -289,16 +290,16 @@ fn a_paused_task_refuses_to_fire_until_it_is_resumed() {
     env.write_task("ondemand", MANUAL);
     let api = serve(&env);
 
-    let (code, body) = api.send("POST", "/v1/tasks/proj/ondemand/pause", None, None);
+    let (code, body) = api.send("POST", "/v1/tasks/ondemand/pause", None, None);
     assert_eq!(code, 200, "{body}");
     assert_eq!(body["paused"], true, "{body}");
 
-    let (code, body) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    let (code, body) = api.send("POST", "/v1/tasks/ondemand/fire", None, None);
     assert_eq!(code, 409, "{body}");
     assert_eq!(body["error"]["code"], "paused", "{body}");
 
-    api.send("POST", "/v1/tasks/proj/ondemand/resume", None, None);
-    let (code, _) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    api.send("POST", "/v1/tasks/ondemand/resume", None, None);
+    let (code, _) = api.send("POST", "/v1/tasks/ondemand/fire", None, None);
     assert_eq!(code, 202, "resuming lets it run again");
 }
 
@@ -314,7 +315,7 @@ fn a_global_pause_holds_everything_and_survives_a_restart() {
 
     // A fresh daemon over the same state is still holding everything.
     let api = serve(&env);
-    let (code, body) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    let (code, body) = api.send("POST", "/v1/tasks/ondemand/fire", None, None);
 
     assert_eq!(code, 409, "{body}");
     assert_eq!(body["error"]["code"], "paused", "{body}");
@@ -332,12 +333,12 @@ fn cancelling_a_run_ends_it() {
     env.write_task("ondemand", MANUAL);
     let api = serve(&env);
 
-    let (_, started) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    let (_, started) = api.send("POST", "/v1/tasks/ondemand/fire", None, None);
     let run_id = started["run_id"].as_str().unwrap().to_string();
 
     let (code, body) = api.send(
         "POST",
-        &format!("/v1/runs/proj/ondemand/{run_id}/cancel"),
+        &format!("/v1/runs/ondemand/{run_id}/cancel"),
         None,
         None,
     );
@@ -346,7 +347,7 @@ fn cancelling_a_run_ends_it() {
     // Once it is gone, the task is free to run again — which is the point.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let (code, _) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+        let (code, _) = api.send("POST", "/v1/tasks/ondemand/fire", None, None);
         if code == 202 || Instant::now() > deadline {
             assert_eq!(code, 202, "the cancelled run released the task");
             break;
@@ -364,7 +365,7 @@ fn cancelling_something_that_is_not_running_is_refused() {
 
     let (code, body) = api.send(
         "POST",
-        "/v1/runs/proj/ondemand/20260811T010000Z/cancel",
+        "/v1/runs/ondemand/20260811T010000Z/cancel",
         None,
         None,
     );
@@ -380,7 +381,7 @@ fn the_log_can_be_streamed_while_a_run_is_going() {
     env.write_task("ondemand", MANUAL);
     let api = serve(&env);
 
-    let (_, started) = api.send("POST", "/v1/tasks/proj/ondemand/fire", None, None);
+    let (_, started) = api.send("POST", "/v1/tasks/ondemand/fire", None, None);
     let run_id = started["run_id"].as_str().unwrap().to_string();
     env.open_gate();
 
@@ -390,7 +391,7 @@ fn the_log_can_be_streamed_while_a_run_is_going() {
         "10",
         "-H",
         &format!("Authorization: Bearer {}", api.token),
-        &format!("{}/v1/runs/proj/ondemand/{run_id}/log/stream", api.base),
+        &format!("{}/v1/runs/ondemand/{run_id}/log/stream", api.base),
     ])
     .expect("the stream should be reachable");
 
@@ -398,5 +399,60 @@ fn the_log_can_be_streamed_while_a_run_is_going() {
     assert!(
         streamed.contains("stub agent ran"),
         "carrying the log: {streamed}"
+    );
+}
+
+#[test]
+fn reloading_reports_what_it_found() {
+    let env = TestEnv::new();
+    env.write_task("ondemand", MANUAL);
+    env.write_task(
+        "wreck",
+        "---\nname: wreck\ndescription: Bad\ncron: \"nope\"\nagent: stub\n---\n\nping\n",
+    );
+    let api = serve(&env);
+
+    let (code, body) = api.send("POST", "/v1/reload", None, None);
+
+    assert_eq!(code, 200, "{body}");
+    let tasks = body["tasks"].as_array().expect("a per-task report");
+    assert_eq!(tasks.len(), 2, "{body}");
+
+    let ready = tasks.iter().find(|t| t["name"] == "ondemand").unwrap();
+    assert_eq!(ready["status"], "ready", "{ready}");
+
+    let broken = tasks.iter().find(|t| t["name"] == "wreck").unwrap();
+    assert_eq!(broken["status"], "broken", "{broken}");
+    assert!(
+        broken["error"].as_str().is_some_and(|e| e.contains("nope")),
+        "the reply should carry the reason, verbatim: {broken}"
+    );
+    assert!(body["configError"].is_null(), "{body}");
+}
+
+#[test]
+fn an_edit_reaches_the_daemon_only_when_it_is_reloaded() {
+    let env = TestEnv::new();
+    env.write_task("ondemand", MANUAL);
+    let api = serve(&env);
+
+    // Change what the task says, on disk, under a running daemon.
+    env.write_task(
+        "ondemand",
+        "---\ndescription: Renamed on disk\ncron: \"0 4 1 1 *\"\nagent: stub\n---\n\nping\n",
+    );
+
+    let before = api.get("/v1/tasks/ondemand");
+    assert_eq!(
+        before["description"], "On demand",
+        "nothing is watched: the running daemon still holds what it was told"
+    );
+
+    api.send("POST", "/v1/reload", None, None);
+
+    let after = api.get("/v1/tasks/ondemand");
+    assert_eq!(
+        after["description"], "Renamed on disk",
+        "and a reload is what makes the edit real"
     );
 }

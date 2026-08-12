@@ -1,23 +1,22 @@
 //! OpenRoutine — the open-source alternative to Claude Code Routines and
 //! ChatGPT scheduled tasks. One daemon: scheduler, API, and UI.
 //!
-//! Vocabulary follows `CONTEXT.md`: a **Task** is one `.cron.md` file in a
-//! **Project**; a due **Tick** becomes exactly one **Run** or one **Skip**;
-//! an **Agent** is a command template.
+//! Vocabulary follows `CONTEXT.md`: a **Task** is one **Registered** markdown
+//! file, named by its own frontmatter; a due **Tick** becomes exactly one
+//! **Run** or one **Skip**; an **Agent** is a command template.
 
 pub mod api;
 pub mod client;
 pub mod clock;
 pub mod config;
-pub mod crontab;
 pub mod daemon;
 pub mod digest;
-pub mod discovery;
 pub mod fire;
 pub mod jitter;
 pub mod list;
 pub mod lock;
 pub mod plan;
+pub mod registry;
 pub mod run;
 pub mod runner;
 pub mod schedule;

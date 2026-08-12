@@ -94,7 +94,8 @@ async fn a_corrupt_state_file_is_set_aside_and_the_tasks_still_run() {
 
     let clock = ManualClock::new(at("2026-08-11T00:30:00Z"));
     let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
-        .expect("daemon should build");
+        .expect("daemon should build")
+        .watching_config(env.config_path());
     daemon
         .reload()
         .await
@@ -105,7 +106,7 @@ async fn a_corrupt_state_file_is_set_aside_and_the_tasks_still_run() {
     daemon.wait_for_running().await;
 
     assert_eq!(env.calls().len(), 1, "losing history does not lose tasks");
-    assert_eq!(env.read_state()["scheduledTasks"][0]["id"], "proj/hourly");
+    assert_eq!(env.read_state()["scheduledTasks"][0]["id"], "hourly");
 
     let set_aside: Vec<_> = std::fs::read_dir(env.state_dir())
         .unwrap()
@@ -152,20 +153,22 @@ async fn a_run_interrupted_by_a_crash_is_recorded_on_the_next_start() {
 
     // What a killed Daemon leaves behind: a record still marked running,
     // with nobody left to finish it.
-    let abandoned = env.state_dir().join("runs/proj/hourly/20260811T010000Z");
+    let abandoned = env.state_dir().join("runs/hourly/20260811T010000Z");
     std::fs::create_dir_all(&abandoned).unwrap();
     std::fs::write(
         abandoned.join("run.json"),
-        r#"{"runId":"20260811T010000Z","taskId":"proj/hourly","status":"running",
+        r#"{"runId":"20260811T010000Z","taskId":"hourly","status":"running",
             "trigger":"schedule","agent":"stub","startedAt":"2026-08-11T01:00:00Z"}"#,
     )
     .unwrap();
 
     let clock = ManualClock::new(at("2026-08-11T02:00:00Z"));
-    let daemon = Daemon::with_zone(env.load_config(), Arc::new(clock), chrono_tz::UTC).unwrap();
+    let daemon = Daemon::with_zone(env.load_config(), Arc::new(clock), chrono_tz::UTC)
+        .unwrap()
+        .watching_config(env.config_path());
     daemon.recover_interrupted_runs();
 
-    let run = env.read_run("proj/hourly", 0);
+    let run = env.read_run("hourly", 0);
     assert_eq!(
         run["status"], "interrupted",
         "a Run nobody is waiting for must not stay 'running' forever"
@@ -180,8 +183,9 @@ async fn recovery_leaves_finished_runs_alone() {
     env.write_config();
 
     let clock = ManualClock::new(at("2026-08-11T00:30:00Z"));
-    let mut daemon =
-        Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC).unwrap();
+    let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
+        .unwrap()
+        .watching_config(env.config_path());
     daemon.reload().await.unwrap();
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
@@ -190,7 +194,7 @@ async fn recovery_leaves_finished_runs_alone() {
     daemon.recover_interrupted_runs();
 
     assert_eq!(
-        env.read_run("proj/hourly", 0)["status"],
+        env.read_run("hourly", 0)["status"],
         "succeeded",
         "a Run that finished properly is not rewritten"
     );
@@ -205,8 +209,9 @@ async fn old_runs_are_pruned_once_the_cap_is_reached() {
     env.write_config_with_extra("max_runs_per_task = 3\n");
 
     let clock = ManualClock::new(at("2026-08-11T00:30:00Z"));
-    let mut daemon =
-        Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC).unwrap();
+    let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
+        .unwrap()
+        .watching_config(env.config_path());
     daemon.reload().await.unwrap();
 
     for hour in 1..=5 {
@@ -215,10 +220,10 @@ async fn old_runs_are_pruned_once_the_cap_is_reached() {
         daemon.wait_for_running().await;
     }
 
-    let dirs = env.run_dirs("proj/hourly");
+    let dirs = env.run_dirs("hourly");
     assert_eq!(dirs.len(), 3, "the cap holds: {dirs:?}");
     assert_eq!(
-        env.read_run("proj/hourly", 2)["scheduledFor"],
+        env.read_run("hourly", 2)["scheduledFor"],
         "2026-08-11T05:00:00Z",
         "and it is the newest that survive"
     );

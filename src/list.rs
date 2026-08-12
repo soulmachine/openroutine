@@ -1,8 +1,10 @@
 //! The `list` report: what runs here, what's wrong, and when it next fires.
 //!
-//! Rendered from Task files alone, so it answers with the Daemon stopped.
+//! Rendered from the registered Task files alone, so it answers with the
+//! Daemon stopped — and answers for disk, which a running Daemon may not yet
+//! have Reloaded.
 
-use crate::discovery::{ScannedTask, TaskHealth};
+use crate::registry::{RegisteredTask, TaskHealth};
 use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 
 const NOT_APPLICABLE: &str = "-";
@@ -24,7 +26,7 @@ struct Row {
 
 /// Renders every Task, its health, and its next Tick as seen from `now`.
 pub fn render<Tz: TimeZone>(
-    tasks: &[ScannedTask],
+    tasks: &[RegisteredTask],
     state: &crate::state::State,
     now: DateTime<Utc>,
     zone: &Tz,
@@ -65,7 +67,7 @@ where
 }
 
 fn row_for<Tz: TimeZone>(
-    task: &ScannedTask,
+    task: &RegisteredTask,
     state: &crate::state::State,
     now: DateTime<Utc>,
     zone: &Tz,
@@ -85,8 +87,8 @@ where
         )
         .collect();
 
-    // Descriptions come from whoever can commit to the Project; a newline
-    // would otherwise break the row apart.
+    // Descriptions come from whoever can edit the file; a newline would
+    // otherwise break the row apart.
     let description = crate::text::one_line(task.description().unwrap_or(NOT_APPLICABLE));
 
     let cells = match &task.health {
@@ -153,7 +155,7 @@ fn push_cells(out: &mut String, cells: &[String; COLUMNS], widths: &[usize; COLU
     out.push('\n');
 }
 
-fn summarize(tasks: &[ScannedTask]) -> String {
+fn summarize(tasks: &[RegisteredTask]) -> String {
     let broken = tasks.iter().filter(|task| task.is_broken()).count();
     let disabled = tasks.iter().filter(|task| task.is_disabled()).count();
     let warned = tasks

@@ -26,20 +26,18 @@ pub struct Api {
 pub fn router(api: Api) -> Router {
     Router::new()
         .route("/v1/tasks", get(list_tasks))
-        .route("/v1/tasks/{project}/{name}", get(task_detail))
-        .route("/v1/tasks/{project}/{name}/runs", get(task_runs))
-        .route("/v1/tasks/{project}/{name}/fire", post(fire))
-        .route("/v1/runs/{project}/{name}/{run}", get(run_detail))
-        .route("/v1/runs/{project}/{name}/{run}/log", get(run_log))
-        .route(
-            "/v1/runs/{project}/{name}/{run}/log/stream",
-            get(run_log_stream),
-        )
-        .route("/v1/runs/{project}/{name}/{run}/cancel", post(cancel))
-        .route("/v1/tasks/{project}/{name}/pause", post(pause_task))
-        .route("/v1/tasks/{project}/{name}/resume", post(resume_task))
+        .route("/v1/tasks/{id}", get(task_detail))
+        .route("/v1/tasks/{id}/runs", get(task_runs))
+        .route("/v1/tasks/{id}/fire", post(fire))
+        .route("/v1/runs/{id}/{run}", get(run_detail))
+        .route("/v1/runs/{id}/{run}/log", get(run_log))
+        .route("/v1/runs/{id}/{run}/log/stream", get(run_log_stream))
+        .route("/v1/runs/{id}/{run}/cancel", post(cancel))
+        .route("/v1/tasks/{id}/pause", post(pause_task))
+        .route("/v1/tasks/{id}/resume", post(resume_task))
         .route("/v1/pause", post(pause_all))
         .route("/v1/resume", post(resume_all))
+        .route("/v1/reload", post(reload))
         .with_state(api)
 }
 
@@ -145,10 +143,9 @@ async fn list_tasks(State(api): State<Api>, headers: HeaderMap) -> Result<Json<V
 async fn task_detail(
     State(api): State<Api>,
     headers: HeaderMap,
-    Path((project, name)): Path<(String, String)>,
+    Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
     authorise(&api, &headers)?;
-    let id = format!("{project}/{name}");
     let daemon = api.daemon.lock().await;
 
     // A Task that cannot run is addressable too — 404-ing the one you most
@@ -230,11 +227,10 @@ struct Paging {
 async fn task_runs(
     State(api): State<Api>,
     headers: HeaderMap,
-    Path((project, name)): Path<(String, String)>,
+    Path(id): Path<String>,
     Query(paging): Query<Paging>,
 ) -> Result<Json<Value>, Failure> {
     authorise(&api, &headers)?;
-    let id = format!("{project}/{name}");
     let daemon = api.daemon.lock().await;
     let mut runs = crate::run::read_history(daemon.state_dir(), &id);
     runs.reverse(); // newest first
@@ -247,10 +243,9 @@ async fn task_runs(
 async fn run_detail(
     State(api): State<Api>,
     headers: HeaderMap,
-    Path((project, name, run)): Path<(String, String, String)>,
+    Path((id, run)): Path<(String, String)>,
 ) -> Result<Json<Value>, Failure> {
     authorise(&api, &headers)?;
-    let id = format!("{project}/{name}");
     let daemon = api.daemon.lock().await;
     crate::run::read_record(daemon.state_dir(), &id, &run)
         .map(|record| Json(json!(record)))
@@ -266,10 +261,9 @@ async fn run_detail(
 async fn run_log(
     State(api): State<Api>,
     headers: HeaderMap,
-    Path((project, name, run)): Path<(String, String, String)>,
+    Path((id, run)): Path<(String, String)>,
 ) -> Result<Response, Failure> {
     authorise(&api, &headers)?;
-    let id = format!("{project}/{name}");
     let daemon = api.daemon.lock().await;
     let path = crate::run::task_runs_dir(daemon.state_dir(), &id)
         .join(&run)
@@ -310,11 +304,10 @@ struct Fired {
 async fn fire(
     State(api): State<Api>,
     headers: HeaderMap,
-    Path((project, name)): Path<(String, String)>,
+    Path(id): Path<String>,
     body: Option<Json<FireBody>>,
 ) -> Result<(StatusCode, Json<Value>), Failure> {
     authorise(&api, &headers)?;
-    let id = format!("{project}/{name}");
     let text = body.and_then(|Json(body)| body.text);
 
     if let Some(text) = &text
@@ -372,17 +365,55 @@ async fn fire(
 async fn pause_task(
     State(api): State<Api>,
     headers: HeaderMap,
-    Path((project, name)): Path<(String, String)>,
+    Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
-    hold(api, headers, Some(format!("{project}/{name}")), true).await
+    hold(api, headers, Some(id), true).await
 }
 
 async fn resume_task(
     State(api): State<Api>,
     headers: HeaderMap,
-    Path((project, name)): Path<(String, String)>,
+    Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
-    hold(api, headers, Some(format!("{project}/{name}")), false).await
+    hold(api, headers, Some(id), false).await
+}
+
+/// Re-reads the config and every registered Task file.
+///
+/// The only way a running Daemon's definitions change: nothing is watched, so
+/// an edit reaches the schedule when — and only when — someone asks.
+async fn reload(State(api): State<Api>, headers: HeaderMap) -> Result<Json<Value>, Failure> {
+    authorise(&api, &headers)?;
+    let mut daemon = api.daemon.lock().await;
+
+    let report = daemon.reload().await.map_err(|error| {
+        Failure(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could_not_reload",
+            format!("{error:#}"),
+        )
+    })?;
+
+    let tasks: Vec<Value> = report
+        .iter()
+        .map(|entry| {
+            json!({
+                "name": entry.id,
+                "path": entry.path,
+                "status": entry.status.label(),
+                "error": entry.error,
+                "warnings": entry.warnings,
+                "novelty": entry.novelty,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "tasks": tasks,
+        // Set when the config itself could not be read: the Daemon kept the
+        // one it had, and whoever asked for this needs to know that.
+        "configError": daemon.config_error(),
+    })))
 }
 
 async fn pause_all(State(api): State<Api>, headers: HeaderMap) -> Result<Json<Value>, Failure> {
@@ -427,10 +458,9 @@ async fn hold(
 async fn cancel(
     State(api): State<Api>,
     headers: HeaderMap,
-    Path((project, name, run)): Path<(String, String, String)>,
+    Path((id, run)): Path<(String, String)>,
 ) -> Result<Json<Value>, Failure> {
     authorise(&api, &headers)?;
-    let id = format!("{project}/{name}");
     let mut daemon = api.daemon.lock().await;
 
     match daemon.cancel(&id, &run) {
@@ -449,10 +479,9 @@ async fn cancel(
 async fn run_log_stream(
     State(api): State<Api>,
     headers: HeaderMap,
-    Path((project, name, run)): Path<(String, String, String)>,
+    Path((id, run)): Path<(String, String)>,
 ) -> Result<Response, Failure> {
     authorise(&api, &headers)?;
-    let id = format!("{project}/{name}");
     let state_dir = api.daemon.lock().await.state_dir().clone();
     let path = crate::run::task_runs_dir(&state_dir, &id)
         .join(&run)

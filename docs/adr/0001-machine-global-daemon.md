@@ -1,5 +1,10 @@
 # One machine-global daemon, not one per project
 
+> **Superseded in part by [ADR-0002](0002-per-file-registration.md)**: repos are no longer
+> registered as Projects and task ids are no longer `<project>/<filename stem>` — task files
+> are registered individually and named in their own frontmatter. The machine-global topology
+> this ADR decides still stands.
+
 OpenRoutine runs a single daemon per machine, watching a set of registered projects — not one daemon per repo. The pitch is "your AI agents' crontab", and crontab is per-user-per-machine; a single daemon is also the only shape under which one port (7373), one boot-service registration, and one web UI stay coherent.
 
 ## Considered Options

@@ -22,7 +22,7 @@ fn a_ready_task_shows_its_id_description_schedule_agent_and_next_fire() {
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/todo-digest"), "{out}");
+    assert!(out.contains("todo-digest"), "{out}");
     assert!(out.contains("Nightly TODO/FIXME triage"), "{out}");
     assert!(out.contains("0 2 * * *"), "{out}");
     assert!(out.contains("stub"), "{out}");
@@ -46,7 +46,7 @@ fn listing_needs_no_daemon_and_no_prior_state() {
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/todo-digest"), "{out}");
+    assert!(out.contains("todo-digest"), "{out}");
     assert!(
         !env.state_file().exists(),
         "a read must not create machine state"
@@ -64,7 +64,7 @@ fn a_task_missing_its_description_is_broken_and_says_which_field() {
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/nameless"), "{out}");
+    assert!(out.contains("nameless"), "{out}");
     assert!(out.to_lowercase().contains("broken"), "{out}");
     assert!(
         out.contains("description"),
@@ -83,7 +83,7 @@ fn an_invalid_cron_expression_is_broken_with_the_parse_error_verbatim() {
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/typo"), "{out}");
+    assert!(out.contains("typo"), "{out}");
     assert!(out.to_lowercase().contains("broken"), "{out}");
     assert!(
         out.contains("0 25 * * *"),
@@ -102,7 +102,7 @@ fn a_task_naming_an_unknown_agent_is_broken() {
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/wrong-agent"), "{out}");
+    assert!(out.contains("wrong-agent"), "{out}");
     assert!(out.to_lowercase().contains("broken"), "{out}");
     assert!(
         out.contains("ghost"),
@@ -152,7 +152,7 @@ fn a_file_without_frontmatter_is_broken_rather_than_ignored() {
     let out = env.run_ok(&["list"]);
 
     assert!(
-        out.contains("proj/bare"),
+        out.contains("bare"),
         "a task file must never vanish silently, got:\n{out}"
     );
     assert!(out.to_lowercase().contains("broken"), "{out}");
@@ -170,7 +170,7 @@ fn an_unknown_frontmatter_key_warns_while_the_task_stays_ready() {
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/odd"), "{out}");
+    assert!(out.contains("odd"), "{out}");
     assert!(
         !out.to_lowercase().contains("broken"),
         "an unknown key must not break the task, got:\n{out}"
@@ -194,9 +194,9 @@ fn broken_tasks_sit_alongside_healthy_ones() {
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/todo-digest"), "{out}");
+    assert!(out.contains("todo-digest"), "{out}");
     assert!(out.contains("Nightly TODO/FIXME triage"), "{out}");
-    assert!(out.contains("proj/typo"), "{out}");
+    assert!(out.contains("typo"), "{out}");
     assert!(
         out.contains("1 broken"),
         "the summary should count the broken one, got:\n{out}"

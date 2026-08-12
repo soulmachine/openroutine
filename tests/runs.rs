@@ -14,7 +14,8 @@ use support::{AgentCall, TestEnv, at};
 async fn fire(env: &TestEnv) -> AgentCall {
     let clock = ManualClock::new(at("2026-08-11T00:30:00Z"));
     let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
-        .expect("daemon should build");
+        .expect("daemon should build")
+        .watching_config(env.config_path());
     daemon.reload().await.expect("reload should succeed");
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
@@ -266,25 +267,26 @@ async fn an_unknown_placeholder_in_a_template_is_rejected_at_load() {
     );
 }
 
-// --- Timeouts -----------------------------------------------------------
+// --- Idle timeout -------------------------------------------------------
 
 #[tokio::test]
-async fn a_task_that_outlives_its_timeout_is_killed_with_its_children() {
+async fn a_task_that_goes_quiet_for_too_long_is_killed_with_its_children() {
     let env = TestEnv::new();
     let marker = env.path().join("child-still-alive");
     env.write_forking_stub_agent(&marker);
-    env.write_task("hang", &task("timeout: 1s\n"));
-    env.write_config();
+    env.write_task("hang", &task(""));
+    env.write_config_with_extra("idle_timeout = \"1s\"\n");
 
     let clock = ManualClock::new(at("2026-08-11T00:30:00Z"));
     let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
-        .expect("daemon should build");
+        .expect("daemon should build")
+        .watching_config(env.config_path());
     daemon.reload().await.unwrap();
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let run = env.read_run("proj/hang", 0);
+    let run = env.read_run("hang", 0);
     assert_eq!(run["status"], "timed-out");
 
     // The stub's child writes the marker a few seconds after being forked.
@@ -296,40 +298,76 @@ async fn a_task_that_outlives_its_timeout_is_killed_with_its_children() {
     );
 }
 
+/// The point of measuring silence rather than total runtime: a Run that is
+/// visibly working is never interrupted, however long it takes.
 #[tokio::test]
-async fn a_task_finishing_inside_its_timeout_is_untouched() {
+async fn a_task_that_keeps_talking_outlives_its_idle_timeout() {
     let env = TestEnv::new();
-    env.write_task("quick", &task("timeout: 30s\n"));
-    env.write_config();
+    // Four seconds of work, in a Run allowed one second of silence.
+    env.write_chatty_stub_agent(4);
+    env.write_task("chatty", &task(""));
+    env.write_config_with_extra("idle_timeout = \"1s\"\n");
 
-    let invocation = fire(&env).await;
+    let clock = ManualClock::new(at("2026-08-11T00:30:00Z"));
+    let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
+        .expect("daemon should build")
+        .watching_config(env.config_path());
+    daemon.reload().await.unwrap();
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
 
-    assert_eq!(invocation.args, vec!["--run", "ping"]);
-    assert_eq!(env.read_run("proj/quick", 0)["status"], "succeeded");
+    let run = env.read_run("chatty", 0);
+    assert_eq!(
+        run["status"], "succeeded",
+        "output resets the clock, so a long run that keeps talking is left alone"
+    );
+    assert!(
+        env.read_run_log("chatty", 0).contains("still working"),
+        "and its whole log is kept"
+    );
 }
 
 #[tokio::test]
-async fn timeout_none_is_accepted_and_leaves_the_run_unbounded() {
+async fn a_task_still_using_the_old_timeout_key_is_told_what_to_write() {
     let env = TestEnv::new();
-    env.write_task("forever", &task("timeout: none\n"));
-    env.write_config();
-
-    let invocation = fire(&env).await;
-
-    assert_eq!(invocation.args, vec!["--run", "ping"]);
-    assert_eq!(env.read_run("proj/forever", 0)["status"], "succeeded");
-}
-
-#[tokio::test]
-async fn a_timeout_that_is_not_a_duration_makes_the_task_broken() {
-    let env = TestEnv::new();
-    env.write_task("bad", &task("timeout: soonish\n"));
+    env.write_task("legacy", &task("timeout: 30m\nidle_timeout: 5m\n"));
     env.write_config();
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.to_lowercase().contains("broken"), "{out}");
-    assert!(out.contains("soonish"), "{out}");
+    assert!(
+        !out.to_lowercase().contains("broken"),
+        "a stale key warns, it does not break the task:\n{out}"
+    );
+    assert!(
+        out.contains("config.toml"),
+        "and the warning should say where it lives now:\n{out}"
+    );
+}
+
+#[tokio::test]
+async fn a_task_finishing_inside_its_idle_timeout_is_untouched() {
+    let env = TestEnv::new();
+    env.write_task("quick", &task(""));
+    env.write_config_with_extra("idle_timeout = \"30s\"\n");
+
+    let invocation = fire(&env).await;
+
+    assert_eq!(invocation.args, vec!["--run", "ping"]);
+    assert_eq!(env.read_run("quick", 0)["status"], "succeeded");
+}
+
+#[tokio::test]
+async fn idle_timeout_none_is_accepted_and_leaves_the_run_unbounded() {
+    let env = TestEnv::new();
+    env.write_task("forever", &task(""));
+    env.write_config_with_extra("idle_timeout = \"none\"\n");
+
+    let invocation = fire(&env).await;
+
+    assert_eq!(invocation.args, vec!["--run", "ping"]);
+    assert_eq!(env.read_run("forever", 0)["status"], "succeeded");
 }
 
 // --- Output cap ---------------------------------------------------------
@@ -343,13 +381,14 @@ async fn a_chatty_agent_has_its_log_capped_and_says_so() {
 
     let clock = ManualClock::new(at("2026-08-11T00:30:00Z"));
     let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
-        .expect("daemon should build");
+        .expect("daemon should build")
+        .watching_config(env.config_path());
     daemon.reload().await.unwrap();
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let log = env.read_run_log("proj/noisy", 0);
+    let log = env.read_run_log("noisy", 0);
     assert!(
         log.len() < 20_000,
         "the log should stop near the cap, got {} bytes",
@@ -361,7 +400,7 @@ async fn a_chatty_agent_has_its_log_capped_and_says_so() {
         &log[log.len().saturating_sub(400)..]
     );
     assert_eq!(
-        env.read_run("proj/noisy", 0)["status"],
+        env.read_run("noisy", 0)["status"],
         "succeeded",
         "hitting the cap does not fail the Run"
     );
@@ -400,32 +439,33 @@ async fn an_env_name_that_would_be_read_as_an_option_cannot_change_the_command()
 }
 
 #[tokio::test]
-async fn a_task_without_a_timeout_inherits_the_configured_default() {
+async fn the_configured_idle_timeout_applies_to_every_task() {
     let env = TestEnv::new();
     env.write_forking_stub_agent(&env.path().join("unused"));
     env.write_task("hang", &task(""));
-    env.write_config_with_extra("default_timeout = \"1s\"\n");
+    env.write_config_with_extra("idle_timeout = \"1s\"\n");
 
     let clock = ManualClock::new(at("2026-08-11T00:30:00Z"));
     let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
-        .expect("daemon should build");
+        .expect("daemon should build")
+        .watching_config(env.config_path());
     daemon.reload().await.unwrap();
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
     assert_eq!(
-        env.read_run("proj/hang", 0)["status"],
+        env.read_run("hang", 0)["status"],
         "timed-out",
-        "the default applies to a task that names no timeout"
+        "the machine-wide idle timeout applies to every task"
     );
 }
 
 #[test]
-fn a_default_timeout_that_is_not_a_duration_is_refused_at_load() {
+fn an_idle_timeout_that_is_not_a_duration_is_refused_at_load() {
     let env = TestEnv::new();
     env.write_task("plain", &task(""));
-    env.write_config_with_extra("default_timeout = \"soonish\"\n");
+    env.write_config_with_extra("idle_timeout = \"soonish\"\n");
 
     let output = env.run(&["list"]);
 
@@ -435,9 +475,43 @@ fn a_default_timeout_that_is_not_a_duration_is_refused_at_load() {
 }
 
 #[test]
-fn a_cwd_that_climbs_out_of_the_project_is_broken() {
+fn an_absolute_cwd_is_allowed() {
     let env = TestEnv::new();
-    env.write_task("escapee", &task("cwd: ../..\n"));
+    let elsewhere = env.add_dir("elsewhere");
+    env.write_task(
+        "traveller",
+        &task(&format!("cwd: {}\n", elsewhere.display())),
+    );
+    env.write_config();
+
+    let out = env.run_ok(&["run", "traveller", "--dry-run"]);
+
+    assert!(
+        out.contains(&elsewhere.display().to_string()),
+        "registering a file is the trust decision; where it runs is the \
+         author's to state:\n{out}"
+    );
+}
+
+#[test]
+fn a_relative_cwd_resolves_against_the_task_files_own_directory() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.project_dir().join("sub")).unwrap();
+    env.write_task("neighbour", &task("cwd: sub\n"));
+    env.write_config();
+
+    let out = env.run_ok(&["run", "neighbour", "--dry-run"]);
+
+    assert!(
+        out.contains(&env.project_dir().join("sub").display().to_string()),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_cwd_that_is_not_there_is_broken() {
+    let env = TestEnv::new();
+    env.write_task("escapee", &task("cwd: nowhere-at-all\n"));
     env.write_config();
 
     let out = env.run_ok(&["list"]);
@@ -446,14 +520,17 @@ fn a_cwd_that_climbs_out_of_the_project_is_broken() {
 }
 
 #[test]
-fn an_absolute_cwd_is_broken() {
+fn a_task_with_no_cwd_runs_beside_its_own_file() {
     let env = TestEnv::new();
-    env.write_task("escapee", &task("cwd: /etc\n"));
+    env.write_task("homebody", &task(""));
     env.write_config();
 
-    let out = env.run_ok(&["list"]);
+    let out = env.run_ok(&["run", "homebody", "--dry-run"]);
 
-    assert!(out.to_lowercase().contains("broken"), "{out}");
+    assert!(
+        out.contains(&env.project_dir().display().to_string()),
+        "the file's directory is where its agent starts:\n{out}"
+    );
 }
 
 #[test]
@@ -477,12 +554,12 @@ fn a_hyphenated_placeholder_typo_is_refused_at_load() {
 #[tokio::test]
 async fn an_out_of_range_duration_breaks_only_its_own_task() {
     let env = TestEnv::new();
-    env.write_task("absurd", &task("timeout: 999999999999d\n"));
+    env.write_task("absurd", &task("jitter: 999999999999d\n"));
     env.write_task("fine", &task(""));
     env.write_config();
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/absurd"), "{out}");
+    assert!(out.contains("absurd"), "{out}");
     assert!(out.contains("1 broken"), "one task, not the daemon:\n{out}");
 }

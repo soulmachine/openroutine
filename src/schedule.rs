@@ -22,8 +22,9 @@ pub enum Schedule {
     Cron(Box<CronSchedule>),
     /// Happens once, at a stated moment.
     At(DateTime<Utc>),
-    /// Never on its own — only when Fired.
-    Manual,
+    /// Happens once, as soon as the Daemon takes the definition in. What a
+    /// Task with neither `cron` nor `at` asks for.
+    Once,
 }
 
 impl Schedule {
@@ -32,7 +33,7 @@ impl Schedule {
         match self {
             Schedule::Cron(cron) => cron.expression.clone(),
             Schedule::At(when) => when.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            Schedule::Manual => "no schedule".to_string(),
+            Schedule::Once => "once".to_string(),
         }
     }
 
@@ -45,7 +46,9 @@ impl Schedule {
         match self {
             Schedule::Cron(cron) => cron.find(after, zone, false),
             Schedule::At(when) => (*when > after).then_some(*when),
-            Schedule::Manual => None,
+            // Its one Tick is decided by when the Daemon loaded it, not by
+            // anything the clock can be walked forward to.
+            Schedule::Once => None,
         }
     }
 
@@ -58,7 +61,7 @@ impl Schedule {
         match self {
             Schedule::Cron(cron) => cron.find(at, zone, true),
             Schedule::At(when) => (*when >= at).then_some(*when),
-            Schedule::Manual => None,
+            Schedule::Once => None,
         }
     }
 
@@ -72,12 +75,13 @@ impl Schedule {
             .map(|following| following - tick)
     }
 
-    /// Whether this Task ever comes due on its own.
-    pub fn is_manual(&self) -> bool {
-        matches!(self, Schedule::Manual)
+    /// Whether this Task answers one Tick and is then done.
+    pub fn is_one_shot(&self) -> bool {
+        matches!(self, Schedule::At(_) | Schedule::Once)
     }
 
-    /// The moment a One-shot is waiting for.
+    /// The moment a One-shot is waiting for. `Once` has none: it is waiting
+    /// for the Daemon rather than for the clock.
     pub fn one_shot_at(&self) -> Option<DateTime<Utc>> {
         match self {
             Schedule::At(when) => Some(*when),

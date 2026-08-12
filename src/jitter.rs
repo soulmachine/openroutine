@@ -34,6 +34,12 @@ pub fn fire_at<Tz: TimeZone>(
     tick: DateTime<Utc>,
     zone: &Tz,
 ) -> DateTime<Utc> {
+    // A `Once` Task's Tick is "now, because the Daemon just took it in".
+    // Nudging that would only make `add` look broken; there is no stampede
+    // to spread, since its moment is whenever someone registered it.
+    if matches!(schedule, Schedule::Once) {
+        return tick;
+    }
     let interval = schedule.interval_after(tick, zone);
     tick + offset(task_id, window(interval, configured))
 }

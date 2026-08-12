@@ -21,12 +21,6 @@ const DISABLE_ENV: &str = "OPENROUTINE_DISABLE";
 /// How often the scheduler looks for due Ticks. Minute-resolution cron needs
 /// nothing finer; the cost of a pass is a comparison per Task.
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
-/// How often the Projects are rescanned regardless of what the watcher says.
-/// The watcher makes reloads prompt; this is what makes them certain.
-const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
-/// How long to let a burst of file events settle before rescanning, so a
-/// branch checkout produces one reload rather than fifty.
-const SETTLE: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -49,22 +43,26 @@ enum Command {
     Serve,
     /// Show every Task, its schedule, and its health.
     List,
-    /// Register a directory so its Tasks are scheduled.
+    /// Register a Task file so it is scheduled.
     Add {
-        /// The directory to watch.
-        dir: PathBuf,
-        /// A name for it; defaults to the directory's own.
+        /// The markdown file defining the Task.
+        file: PathBuf,
+    },
+    /// Unregister a Task. The file is left alone unless you say otherwise.
+    Remove {
+        /// The Task's name, or the path of its file.
+        task: String,
+        /// Delete the file as well as unregistering it.
         #[arg(long)]
-        name: Option<String>,
+        delete: bool,
     },
-    /// Stop watching a directory.
-    Remove { dir: PathBuf },
-    /// Write a starter config and a sample Task.
-    Init {
-        /// The directory to register and put the sample in.
-        #[arg(default_value = ".")]
-        dir: PathBuf,
+    /// Re-read the config and every registered Task file.
+    Reload {
+        /// Report on one Task; the reload itself is always complete.
+        task: Option<String>,
     },
+    /// Write a starter config.
+    Init,
     /// Summarise the daemon and what it would be running.
     Status,
     /// Show a Task's most recent Run.
@@ -167,9 +165,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Serve => serve(&config_path).await,
         Command::List => list(&config_path),
-        Command::Add { dir, name } => add(&config_path, &dir, name.as_deref()),
-        Command::Remove { dir } => remove(&config_path, &dir),
-        Command::Init { dir } => init(&config_path, &dir),
+        Command::Add { file } => add(&config_path, &file).await,
+        Command::Remove { task, delete } => remove(&config_path, &task, delete).await,
+        Command::Reload { task } => reload(&config_path, task.as_deref()).await,
+        Command::Init => init(&config_path),
         Command::Status => status(&config_path),
         Command::Logs { task, follow } => logs(&config_path, &task, follow),
         Command::Run {
@@ -190,30 +189,18 @@ async fn main() -> Result<()> {
 /// written back.
 fn list(config_path: &std::path::Path) -> Result<()> {
     let config = Config::load(config_path)?;
-    let scan = openroutine::discovery::scan_all(&config);
+    let tasks = openroutine::registry::load_all(&config);
     // State is disposable by design; a damaged one must not stop a read.
     let state = openroutine::state::State::load(&config.state_dir()?).unwrap_or_else(|error| {
         tracing::warn!("ignoring unreadable run state: {error:#}");
         openroutine::state::State::default()
     });
-    let mut report = openroutine::list::render(
-        &scan.tasks,
+    let report = openroutine::list::render(
+        &tasks,
         &state,
         SystemClock.now(),
         &openroutine::zone::host(),
     );
-
-    // A Project we could not read is not an empty one, and must not look
-    // like one.
-    for project in &config.projects {
-        let name = project.resolved_name();
-        if !scan.reachable_projects.contains(&name) {
-            report.push_str(&format!(
-                "\nproject {name:?} is unreachable: cannot read {}\n",
-                project.path.display()
-            ));
-        }
-    }
 
     // `openroutine list | head` closes the pipe early; that's the reader's
     // choice, not an error worth a panic.
@@ -223,91 +210,222 @@ fn list(config_path: &std::path::Path) -> Result<()> {
     }
 }
 
-/// Registers a Project, editing the config in place.
-fn add(config_path: &std::path::Path, dir: &std::path::Path, name: Option<&str>) -> Result<()> {
-    let dir = dir
+/// Registers one Task file, editing the config in place.
+///
+/// Validated here rather than at the next Tick: a file that cannot run should
+/// be refused in front of whoever just wrote it.
+async fn add(config_path: &std::path::Path, file: &std::path::Path) -> Result<()> {
+    let file = file
         .canonicalize()
-        .with_context(|| format!("no such directory: {}", dir.display()))?;
+        .with_context(|| format!("no such file: {}", file.display()))?;
+    if !file.is_file() {
+        anyhow::bail!("{} is not a file", file.display());
+    }
     let config = Config::load(config_path)?;
 
-    if let Some(existing) = config
-        .projects
-        .iter()
-        .find(|project| project.path.canonicalize().is_ok_and(|path| path == dir))
-    {
-        println!(
-            "{} is already registered as {:?}.",
-            dir.display(),
-            existing.resolved_name()
-        );
+    if config.tasks.iter().any(|task| same_file(task, &file)) {
+        println!("{} is already registered.", file.display());
         return Ok(());
     }
 
-    let name = name.map(str::to_string).unwrap_or_else(|| basename(&dir));
-    if let Some(clash) = config
-        .projects
+    let candidate = openroutine::registry::load_one(&file, &config);
+    if let openroutine::registry::TaskHealth::Broken { error, .. } = &candidate.health {
+        anyhow::bail!("{}: {error}", file.display());
+    }
+    // Uniqueness is decided on the id, not the written name: two different
+    // names can derive the same id, and it is the id that becomes a run
+    // directory and an API path.
+    if let Some(clash) = openroutine::registry::load_all(&config)
         .iter()
-        .find(|project| project.resolved_name() == name)
+        .find(|task| task.id == candidate.id)
     {
         anyhow::bail!(
-            "a project called {name:?} is already registered ({}); \
-             pick another with --name",
+            "the id {:?} is already registered ({}); \
+             give one of them a different `name`",
+            candidate.id,
             clash.path.display()
         );
     }
 
     let mut document = read_document(config_path)?;
-    let mut entry = toml_edit::Table::new();
-    entry["path"] = toml_edit::value(dir.display().to_string());
-    entry["name"] = toml_edit::value(name.clone());
-    document["projects"]
-        .or_insert(toml_edit::Item::ArrayOfTables(
-            toml_edit::ArrayOfTables::new(),
-        ))
-        .as_array_of_tables_mut()
-        .context("`projects` in the config is not a list of tables")?
-        .push(entry);
+    document
+        .entry("tasks")
+        .or_insert(toml_edit::Item::Value(toml_edit::Value::Array(
+            toml_edit::Array::new(),
+        )))
+        .as_array_mut()
+        .context("`tasks` in the config is not an array")?
+        .push(file.display().to_string());
     write_document(config_path, &document)?;
 
-    println!("Registered {} as {name:?}.", dir.display());
+    // The id is what every other command wants, and deriving it from the
+    // name is lossy — so say what it came out as whenever it differs.
+    match candidate.definition().map(|definition| &definition.name) {
+        Some(name) if name != &candidate.id => println!(
+            "Registered {:?} as {:?} ({}).",
+            name,
+            candidate.id,
+            file.display()
+        ),
+        _ => println!("Registered {:?} ({}).", candidate.id, file.display()),
+    }
+    for warning in candidate.warnings() {
+        println!("warning: {warning}");
+    }
+    nudge_daemon(config_path).await;
     Ok(())
 }
 
-/// Unregisters a Project. Its Tasks stop being scheduled; nothing on disk in
-/// the Project itself is touched.
-fn remove(config_path: &std::path::Path, dir: &std::path::Path) -> Result<()> {
-    let wanted = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let mut document = read_document(config_path)?;
+/// Unregisters a Task, by name or by path.
+///
+/// The file is the user's, so it stays where it is unless `--delete` says
+/// otherwise: `remove` undoes `add`, nothing more.
+async fn remove(config_path: &std::path::Path, task: &str, delete: bool) -> Result<()> {
+    let config = Config::load(config_path)?;
+    let wanted = registered_path(&config, task)?;
 
-    let Some(projects) = document
-        .get_mut("projects")
-        .and_then(|item| item.as_array_of_tables_mut())
+    let mut document = read_document(config_path)?;
+    let Some(tasks) = document
+        .get_mut("tasks")
+        .and_then(|item| item.as_array_mut())
     else {
-        anyhow::bail!("{} is not registered", dir.display());
+        anyhow::bail!("{task} is not registered");
     };
 
-    let before = projects.len();
-    projects.retain(|entry| {
-        let path = entry
-            .get("path")
-            .and_then(|path| path.as_str())
-            .unwrap_or("");
-        let path = std::path::Path::new(path);
-        path.canonicalize().unwrap_or_else(|_| path.to_path_buf()) != wanted
+    let before = tasks.len();
+    tasks.retain(|entry| {
+        entry
+            .as_str()
+            .is_none_or(|path| !same_file(std::path::Path::new(path), &wanted))
     });
-    if projects.len() == before {
-        anyhow::bail!("{} is not registered", dir.display());
+    if tasks.len() == before {
+        anyhow::bail!("{task} is not registered");
+    }
+    write_document(config_path, &document)?;
+    println!("Unregistered {}.", wanted.display());
+
+    if delete {
+        match std::fs::remove_file(&wanted) {
+            Ok(()) => println!("Deleted {}.", wanted.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                println!("{} was already gone.", wanted.display())
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("deleting {}", wanted.display()));
+            }
+        }
     }
 
-    write_document(config_path, &document)?;
-    println!("Removed {}.", wanted.display());
+    nudge_daemon(config_path).await;
     Ok(())
 }
 
-fn basename(dir: &std::path::Path) -> String {
-    dir.file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "project".to_string())
+/// The registered file a name or path refers to.
+///
+/// A path always works, which is what makes a file too broken to state its
+/// own name still removable.
+fn registered_path(config: &Config, task: &str) -> Result<PathBuf> {
+    let literal = std::path::Path::new(task);
+    if let Some(path) = config
+        .tasks
+        .iter()
+        .find(|candidate| same_file(candidate, literal))
+    {
+        return Ok(path.clone());
+    }
+
+    let loaded = openroutine::registry::load_all(config);
+    loaded
+        .iter()
+        .find(|candidate| candidate.id == task)
+        .map(|candidate| candidate.path.clone())
+        .with_context(|| format!("no registered task called {task:?}"))
+}
+
+/// Whether two paths name the same file, canonicalising what exists and
+/// comparing literally what does not.
+fn same_file(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let resolve =
+        |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    resolve(left) == resolve(right)
+}
+
+/// Asks a running Daemon to Reload, if there is one.
+///
+/// Best-effort by design: nothing is watched, so a Daemon that isn't running
+/// simply picks the change up when it next starts.
+async fn nudge_daemon(config_path: &std::path::Path) {
+    let config = match Config::load(config_path) {
+        Ok(config) => config,
+        Err(_) => return,
+    };
+    let Ok(state_dir) = config.state_dir() else {
+        return;
+    };
+    if !openroutine::lock::is_held(&state_dir) {
+        println!("The daemon is not running; it will pick this up when it starts.");
+        return;
+    }
+    match call_api(config_path, "POST", "/v1/reload", None).await {
+        Ok(_) => println!("Reloaded the running daemon."),
+        Err(error) => println!("Could not reload the running daemon: {error:#}"),
+    }
+}
+
+/// Re-reads everything, then says what that found.
+async fn reload(config_path: &std::path::Path, only: Option<&str>) -> Result<()> {
+    let report = call_api(config_path, "POST", "/v1/reload", None).await?;
+
+    if let Some(error) = report.get("configError").and_then(|value| value.as_str()) {
+        println!("config: {error}");
+        println!("The daemon kept the config it already had.");
+    }
+
+    let empty = Vec::new();
+    let tasks = report
+        .get("tasks")
+        .and_then(|value| value.as_array())
+        .unwrap_or(&empty);
+
+    let mut shown = 0;
+    for task in tasks {
+        let name = task.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        if only.is_some_and(|wanted| wanted != name) {
+            continue;
+        }
+        shown += 1;
+        let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+        println!("{status:<9} {name}");
+        for key in ["error", "novelty"] {
+            if let Some(note) = task.get(key).and_then(|v| v.as_str()) {
+                println!("          {note}");
+            }
+        }
+        for warning in task
+            .get("warnings")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty)
+        {
+            if let Some(warning) = warning.as_str() {
+                println!("          warning: {warning}");
+            }
+        }
+    }
+
+    match only {
+        Some(wanted) if shown == 0 => {
+            println!(
+                "Reloaded {} task(s); none is called {wanted:?}.",
+                tasks.len()
+            )
+        }
+        _ => println!(
+            "\nReloaded {} task{}.",
+            tasks.len(),
+            if tasks.len() == 1 { "" } else { "s" }
+        ),
+    }
+    Ok(())
 }
 
 fn read_document(path: &std::path::Path) -> Result<toml_edit::DocumentMut> {
@@ -327,92 +445,78 @@ fn write_document(path: &std::path::Path, document: &toml_edit::DocumentMut) -> 
         .with_context(|| format!("replacing config at {}", path.display()))
 }
 
-/// Writes a config and a sample Task, so the first five minutes need no
-/// documentation.
-fn init(config_path: &std::path::Path, dir: &std::path::Path) -> Result<()> {
+/// Writes the config, and prints a Task to copy, so the first five minutes
+/// need no documentation.
+///
+/// Nothing is registered here and no file is written anywhere else:
+/// registering is `add`, and it is the user's move to make.
+fn init(config_path: &std::path::Path) -> Result<()> {
     if config_path.exists() {
         anyhow::bail!(
-            "{} already exists; edit it, or use `add` to register another directory",
+            "{} already exists; edit it, or use `add` to register a task file",
             config_path.display()
         );
     }
-    let dir = dir
-        .canonicalize()
-        .with_context(|| format!("no such directory: {}", dir.display()))?;
 
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(config_path, starter_config(&dir))
+    std::fs::write(config_path, STARTER_CONFIG)
         .with_context(|| format!("writing {}", config_path.display()))?;
 
-    let sample = dir.join("hello.cron.md");
-    if !sample.exists() {
-        std::fs::write(&sample, SAMPLE_TASK)
-            .with_context(|| format!("writing {}", sample.display()))?;
-    }
-
     println!("Wrote config {}", config_path.display());
-    println!("Wrote sample task {}", sample.display());
-    println!("\nTry:  openroutine list                  # what would run");
-    println!("      openroutine run hello --dry-run   # what it would do");
-    println!("      openroutine serve                 # start the scheduler");
+    println!("\nA task is one markdown file. Save this as hello.md:\n");
+    println!("{SAMPLE_TASK}");
+    println!("Then:  openroutine add hello.md          # register it");
+    println!("       openroutine list                  # what would run");
+    println!("       openroutine run hello --dry-run   # what it would do");
+    println!("       openroutine serve                 # start the scheduler");
     println!("\nNothing fires until a daemon is running. `openroutine install`");
     println!("registers one with your service manager, without sudo.");
     Ok(())
 }
 
-fn starter_config(dir: &std::path::Path) -> String {
-    format!(
-        "# openroutine — https://openroutine.dev\n\
-         \n\
-         # The agent a task gets when it names none.\n\
-         default_agent = \"claude\"\n\
-         \n\
-         # Directories whose *.cron.md files should be scheduled.\n\
-         [[projects]]\n\
-         path = {dir:?}\n\
-         \n\
-         # An agent is a command template. {{prompt}} is substituted as a\n\
-         # single argument; without it, the prompt arrives on stdin.\n\
-         [agents.claude]\n\
-         cmd = \"claude --dangerously-skip-permissions --effort xhigh -p {{prompt}}\"\n\
-         \n\
-         [agents.codex]\n\
-         cmd = \"codex --yolo -c model_reasoning_effort=xhigh exec {{prompt}}\"\n",
-        dir = dir.display().to_string(),
-    )
-}
+const STARTER_CONFIG: &str = "# openroutine — https://openroutine.dev\n\
+     \n\
+     # The agent a task gets when it names none.\n\
+     default_agent = \"claude\"\n\
+     \n\
+     # Every registered task file, by absolute path. `openroutine add` writes\n\
+     # these; editing them by hand is fine too.\n\
+     tasks = []\n\
+     \n\
+     # An agent is a command template. {prompt} is substituted as a\n\
+     # single argument; without it, the prompt arrives on stdin.\n\
+     [agents.claude]\n\
+     cmd = \"claude --dangerously-skip-permissions --effort xhigh -p {prompt}\"\n\
+     \n\
+     [agents.codex]\n\
+     cmd = \"codex --yolo -c model_reasoning_effort=xhigh exec {prompt}\"\n";
 
 const SAMPLE_TASK: &str = "---\n\
+     name: hello\n\
      description: Say hello, nightly\n\
      cron: \"0 9 * * *\"\n\
      ---\n\
      \n\
-     Say hello, then stop. This is a sample task — edit or delete it.\n";
+     Say hello, then stop. This is a sample task — edit or delete it.";
 
 /// Summarises the daemon and what it would be running.
 fn status(config_path: &std::path::Path) -> Result<()> {
     let config = Config::load(config_path)?;
     let state_dir = config.state_dir()?;
-    let scan = openroutine::discovery::scan_all(&config);
+    let tasks = openroutine::registry::load_all(&config);
     let state = openroutine::state::State::load(&state_dir).unwrap_or_default();
 
-    let broken = scan.tasks.iter().filter(|task| task.is_broken()).count();
-    let flagged = scan
-        .tasks
+    let broken = tasks.iter().filter(|task| task.is_broken()).count();
+    let flagged = tasks
         .iter()
         .filter(|task| {
             task.novelty(state.last_run_digest(&task.id))
                 .note()
                 .is_some()
         })
-        .count();
-    let unreachable = config
-        .projects
-        .iter()
-        .filter(|project| !scan.reachable_projects.contains(&project.resolved_name()))
         .count();
 
     let daemon = if openroutine::lock::is_held(&state_dir) {
@@ -427,25 +531,16 @@ fn status(config_path: &std::path::Path) -> Result<()> {
     println!("daemon:   {daemon}");
     println!("config:   {}", config_path.display());
     println!("state:    {}", state_dir.display());
-    println!(
-        "projects: {}{}",
-        config.projects.len(),
-        if unreachable > 0 {
-            format!(" ({unreachable} unreachable)")
-        } else {
-            String::new()
-        }
-    );
-    let disabled = scan.tasks.iter().filter(|task| task.is_disabled()).count();
+    println!("files:    {} registered", config.tasks.len());
+    let disabled = tasks.iter().filter(|task| task.is_disabled()).count();
     println!(
         "tasks:    {} ready, {disabled} disabled, {broken} broken, {flagged} flagged",
-        scan.tasks.len() - broken - disabled
+        tasks.len() - broken - disabled
     );
     if state.paused {
         println!("paused:   yes — nothing will fire until you resume");
     } else {
-        let held: Vec<&str> = scan
-            .tasks
+        let held: Vec<&str> = tasks
             .iter()
             .filter(|task| state.is_paused(&task.id))
             .map(|task| task.id.as_str())
@@ -465,8 +560,8 @@ fn status(config_path: &std::path::Path) -> Result<()> {
 /// Prints a Task's most recent Run, straight from disk.
 fn logs(config_path: &std::path::Path, wanted: &str, follow: bool) -> Result<()> {
     let config = Config::load(config_path)?;
-    let scan = openroutine::discovery::scan_all(&config);
-    let task = resolve(&scan.tasks, wanted)?;
+    let tasks = openroutine::registry::load_all(&config);
+    let task = resolve(&tasks, wanted)?;
 
     let runs = openroutine::run::task_runs_dir(&config.state_dir()?, &task.id);
     let mut directories: Vec<PathBuf> = std::fs::read_dir(&runs)
@@ -530,8 +625,8 @@ async fn run(
     text: Option<&str>,
 ) -> Result<()> {
     let config = Config::load(config_path)?;
-    let scan = openroutine::discovery::scan_all(&config);
-    let task = resolve(&scan.tasks, wanted)?;
+    let tasks = openroutine::registry::load_all(&config);
+    let task = resolve(&tasks, wanted)?;
 
     if !dry_run {
         let id = task.id.clone();
@@ -542,7 +637,8 @@ async fn run(
             &format!("/v1/tasks/{id}/fire"),
             body.as_deref(),
         )
-        .await?;
+        .await
+        .map_err(|error| stale_daemon_hint(error, &id))?;
         println!(
             "Started {} — {}",
             answer["run_id"].as_str().unwrap_or("a run"),
@@ -558,37 +654,54 @@ async fn run(
     Ok(())
 }
 
-/// Finds the Task someone meant: a full `<project>/<name>` id, or a bare
-/// name where only one Task answers to it.
+/// Explains a Task the Daemon has never heard of but disk clearly has.
+///
+/// Definitions reach the Daemon only at a Reload, so "no such task" from a
+/// running Daemon about a Task that is plainly registered means one thing.
+fn stale_daemon_hint(error: anyhow::Error, id: &str) -> anyhow::Error {
+    if format!("{error:#}").contains("no task called") {
+        return error.context(format!(
+            "{id:?} is registered but the running daemon has not taken it in; \
+             run `openroutine reload`"
+        ));
+    }
+    error
+}
+
+/// Finds the Task someone meant: its name, or the path of its file.
+///
+/// Names are unique, so this is an exact match rather than a search. The path
+/// form is what reaches a file too broken to state a name of its own.
 fn resolve<'a>(
-    tasks: &'a [openroutine::discovery::ScannedTask],
+    tasks: &'a [openroutine::registry::RegisteredTask],
     wanted: &str,
-) -> Result<&'a openroutine::discovery::ScannedTask> {
-    if let Some(exact) = tasks.iter().find(|task| task.id == wanted) {
+) -> Result<&'a openroutine::registry::RegisteredTask> {
+    // An id belongs to the file that claimed it first; a later file deriving
+    // the same one is Broken and answers only to its path. So prefer the
+    // holder, and fall back to a Broken match when that is all there is.
+    let by_id = |id: &str| {
+        tasks
+            .iter()
+            .find(|task| task.id == id && !task.is_broken())
+            .or_else(|| tasks.iter().find(|task| task.id == id))
+    };
+    if let Some(exact) = by_id(wanted) {
+        return Ok(exact);
+    }
+    // Typing the written name works too, put through the same derivation the
+    // file's own name went through — so `run "Nightly triage"` finds
+    // `nightly-triage` without the user having to slug it by hand.
+    if let Ok(derived) = openroutine::task::slugify(wanted)
+        && let Some(exact) = by_id(&derived)
+    {
         return Ok(exact);
     }
 
-    let matches: Vec<&openroutine::discovery::ScannedTask> = tasks
+    let literal = std::path::Path::new(wanted);
+    tasks
         .iter()
-        .filter(|task| {
-            task.id
-                .split_once('/')
-                .is_some_and(|(_, name)| name == wanted)
-        })
-        .collect();
-
-    match matches.as_slice() {
-        [only] => Ok(only),
-        [] => anyhow::bail!("no task called {wanted:?}"),
-        several => anyhow::bail!(
-            "{wanted:?} is ambiguous; say which one:\n{}",
-            several
-                .iter()
-                .map(|task| format!("  {}", task.id))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
-    }
+        .find(|task| same_file(&task.path, literal))
+        .with_context(|| format!("no task called {wanted:?}"))
 }
 
 /// Holds or releases Tasks, through the daemon so a running one obeys.
@@ -601,17 +714,26 @@ async fn hold(
     if task.is_none() && !all {
         anyhow::bail!("name a task, or pass --all");
     }
+    let mut resolved = None;
     let path = match task {
         Some(name) => {
             let config = Config::load(config_path)?;
-            let scan = openroutine::discovery::scan_all(&config);
-            let id = resolve(&scan.tasks, name)?.id.clone();
-            format!("/v1/tasks/{id}/{}", verb(paused))
+            let tasks = openroutine::registry::load_all(&config);
+            let id = resolve(&tasks, name)?.id.clone();
+            let path = format!("/v1/tasks/{id}/{}", verb(paused));
+            resolved = Some(id);
+            path
         }
         None => format!("/v1/{}", verb(paused)),
     };
 
-    let answer = call_api(config_path, "POST", &path, None).await?;
+    let answer =
+        call_api(config_path, "POST", &path, None)
+            .await
+            .map_err(|error| match &resolved {
+                Some(id) => stale_daemon_hint(error, id),
+                None => error,
+            })?;
     println!(
         "{} {}",
         if paused { "Paused" } else { "Resumed" },
@@ -783,7 +905,6 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
 
     let state_dir = daemon.state_dir().clone();
     let bind = config_bind(config_path);
-    let project_dirs = daemon.project_dirs();
     let daemon = std::sync::Arc::new(tokio::sync::Mutex::new(daemon));
     let api_token = openroutine::token::load_or_create(&state_dir)?;
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -811,13 +932,11 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
         .into_future(),
     );
 
+    // Definitions were read once, at startup. Nothing re-reads them on a
+    // timer or a file event: a Reload is asked for, through the API, and
+    // until one arrives the Daemon runs exactly what it was told to.
     let mut ticker = tokio::time::interval(TICK_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut rescan = tokio::time::interval(RESCAN_INTERVAL);
-    rescan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    rescan.tick().await; // the first tick is immediate; we just scanned
-
-    let mut changes = watch_projects(project_dirs);
 
     loop {
         tokio::select! {
@@ -825,14 +944,6 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
                 if let Err(error) = daemon.lock().await.tick().await {
                     tracing::error!("tick failed: {error:#}");
                 }
-            }
-            _ = rescan.tick() => reload(&mut *daemon.lock().await).await,
-            Some(()) = changes.recv() => {
-                // Let the rest of the burst arrive, then take everything at
-                // once — and drain, so a checkout is one reload, not fifty.
-                tokio::time::sleep(SETTLE).await;
-                while changes.try_recv().is_ok() {}
-                reload(&mut *daemon.lock().await).await;
             }
             signal = shutdown.recv() => {
                 server.abort();
@@ -867,57 +978,6 @@ fn config_bind(config_path: &std::path::Path) -> String {
     Config::load(config_path)
         .map(|config| config.bind())
         .unwrap_or_else(|_| format!("127.0.0.1:{}", openroutine::api::DEFAULT_PORT))
-}
-
-/// Rescans, keeping the Daemon alive if a scan fails — a bad moment on disk
-/// should not take the scheduler down with it.
-async fn reload(daemon: &mut Daemon) {
-    match daemon.reload().await {
-        Ok(()) => tracing::debug!(tasks = daemon.task_count(), "rescanned"),
-        Err(error) => tracing::error!("rescan failed: {error:#}"),
-    }
-}
-
-/// Watches every Project for changes.
-///
-/// Events only ever *hasten* a rescan: the periodic scan is the source of
-/// truth, so a missed or coalesced event costs latency, never correctness.
-fn watch_projects(dirs: Vec<PathBuf>) -> tokio::sync::mpsc::Receiver<()> {
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-
-    std::thread::spawn(move || {
-        use notify::Watcher;
-
-        let notify_sender = sender.clone();
-        let mut watcher = match notify::recommended_watcher(move |event| {
-            if matches!(event, Ok(notify::Event { .. })) {
-                // A full channel already means "rescan pending".
-                let _ = notify_sender.try_send(());
-            }
-        }) {
-            Ok(watcher) => watcher,
-            Err(error) => {
-                tracing::warn!(
-                    "file watching unavailable, falling back to periodic rescans: {error}"
-                );
-                return;
-            }
-        };
-
-        for dir in &dirs {
-            if let Err(error) = watcher.watch(dir, notify::RecursiveMode::Recursive) {
-                tracing::warn!(dir = %dir.display(), "cannot watch for changes: {error}");
-            }
-        }
-
-        // The watcher stops the moment it is dropped, so hold it until the
-        // daemon lets go of the channel.
-        while !sender.is_closed() {
-            std::thread::sleep(Duration::from_millis(250));
-        }
-    });
-
-    receiver
 }
 
 /// SIGTERM and SIGINT, held open for the daemon's whole life.

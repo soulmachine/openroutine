@@ -1,5 +1,5 @@
-//! Hot reload: the schedule follows what's on disk, without a restart, and
-//! says so when a Task appears or changes.
+//! Reload: the one moment definitions change. The schedule follows disk when
+//! — and only when — someone asks, and says so when a Task is new or edited.
 
 mod support;
 
@@ -14,13 +14,14 @@ const HOURLY: &str =
 async fn daemon_at(env: &TestEnv, now: &str) -> (Daemon, ManualClock) {
     let clock = ManualClock::new(at(now));
     let mut daemon = Daemon::with_zone(env.load_config(), Arc::new(clock.clone()), chrono_tz::UTC)
-        .expect("daemon should build");
+        .expect("daemon should build")
+        .watching_config(env.config_path());
     daemon.reload().await.expect("reload should succeed");
     (daemon, clock)
 }
 
 #[tokio::test]
-async fn a_task_file_dropped_in_later_is_scheduled_without_a_restart() {
+async fn a_task_registered_later_is_scheduled_without_a_restart() {
     let env = TestEnv::new();
     env.write_config();
 
@@ -35,6 +36,40 @@ async fn a_task_file_dropped_in_later_is_scheduled_without_a_restart() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
     assert_eq!(env.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn an_edit_does_nothing_until_a_reload() {
+    let env = TestEnv::new();
+    env.write_task(
+        "shifting",
+        "---\ndescription: Daily\ncron: \"0 2 * * *\"\nagent: stub\njitter: 0\n---\n\nping\n",
+    );
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+
+    // Re-aimed at every hour, on disk, while the daemon runs.
+    env.write_task("shifting", HOURLY);
+
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+    assert!(
+        env.calls().is_empty(),
+        "nothing is watched: the daemon still holds the definition it was given"
+    );
+
+    daemon.reload().await.unwrap();
+    clock.set(at("2026-08-11T02:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(
+        env.calls().len(),
+        1,
+        "and asking for a reload is what makes the edit real"
+    );
 }
 
 #[tokio::test]
@@ -96,7 +131,7 @@ async fn an_edit_mid_run_leaves_the_active_run_alone() {
 }
 
 #[tokio::test]
-async fn deleting_a_task_mid_run_lets_it_finish_then_forgets_the_task() {
+async fn unregistering_mid_run_lets_it_finish_then_forgets_the_task() {
     let env = TestEnv::new();
     env.write_gated_stub_agent();
     let path = env.write_task("doomed", HOURLY);
@@ -106,75 +141,66 @@ async fn deleting_a_task_mid_run_lets_it_finish_then_forgets_the_task() {
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
 
-    std::fs::remove_file(&path).unwrap();
+    // Unregistered — the deliberate act, not merely a file going missing.
+    env.unregister(&path);
     daemon.reload().await.unwrap();
     env.open_gate();
     daemon.wait_for_running().await;
 
     assert_eq!(daemon.task_count(), 0, "unscheduled");
     assert_eq!(
-        env.read_run("proj/doomed", 0)["status"],
+        env.read_run("doomed", 0)["status"],
         "succeeded",
         "the Run that was already going still finished and was recorded"
     );
-    assert!(
-        !env.read_run_log("proj/doomed", 0).is_empty(),
-        "its log is kept"
-    );
+    assert!(!env.read_run_log("doomed", 0).is_empty(), "its log is kept");
 
     let state = env.read_state();
     assert!(
         state["scheduledTasks"].as_array().unwrap().is_empty(),
-        "the state entry is pruned once the file is gone: {state}"
+        "the state entry is pruned once the task is unregistered: {state}"
     );
 }
 
 #[tokio::test]
-async fn a_rescan_converges_on_whatever_is_on_disk() {
+async fn a_registered_file_that_is_deleted_is_broken_and_keeps_its_state() {
     let env = TestEnv::new();
-    env.write_task("one", HOURLY);
+    let path = env.write_task("kept", HOURLY);
+    env.write_config();
+
+    let (mut daemon, _clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    std::fs::remove_file(&path).unwrap();
+    daemon.reload().await.unwrap();
+
+    assert_eq!(daemon.task_count(), 0, "it cannot run without its file");
+    assert_eq!(daemon.broken_count(), 1, "but it is broken, not forgotten");
+    let state = env.read_state();
+    assert_eq!(
+        state["scheduledTasks"][0]["id"], "kept",
+        "a missing file is not proof anyone unregistered it: {state}"
+    );
+}
+
+#[tokio::test]
+async fn a_reload_converges_on_whatever_is_registered() {
+    let env = TestEnv::new();
+    let one = env.write_task("one", HOURLY);
     env.write_config();
 
     let (mut daemon, _clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
     assert_eq!(daemon.task_count(), 1);
 
-    // Several changes at once, as a branch checkout would make them.
+    // Several changes at once, as a session of edits would make them.
     env.write_task("two", HOURLY);
     env.write_task("three", HOURLY);
-    std::fs::remove_file(env.project_dir().join("one.cron.md")).unwrap();
+    env.unregister(&one);
 
     daemon.reload().await.unwrap();
 
     assert_eq!(
         daemon.task_count(),
         2,
-        "no watcher event needed — the rescan is the source of truth"
-    );
-}
-
-#[tokio::test]
-async fn a_task_whose_project_became_unreadable_keeps_its_state() {
-    let env = TestEnv::new();
-    env.write_task("kept", HOURLY);
-    env.write_config();
-
-    let (mut daemon, _clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
-
-    // Not deleted — just out of reach for a moment.
-    let project = env.project_dir();
-    let mode = std::fs::metadata(&project).unwrap().permissions();
-    let mut locked = mode.clone();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut locked, 0o000);
-    std::fs::set_permissions(&project, locked).unwrap();
-
-    let result = daemon.reload().await;
-    std::fs::set_permissions(&project, mode).unwrap();
-    result.unwrap();
-
-    let state = env.read_state();
-    assert_eq!(
-        state["scheduledTasks"][0]["id"], "proj/kept",
-        "an unreachable project is not proof a Task was deleted: {state}"
+        "one reload takes in everything the config now names"
     );
 }
 
@@ -188,7 +214,7 @@ fn a_task_that_has_never_run_is_flagged_as_new() {
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("proj/fresh"), "{out}");
+    assert!(out.contains("fresh"), "{out}");
     assert!(
         out.to_lowercase().contains("new"),
         "a task nobody has run yet should announce itself:\n{out}"
@@ -283,7 +309,7 @@ async fn ticks_passed_over_while_the_daemon_lagged_survive_a_rescan() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let skips = env.read_state()["recordedSkips"]["proj/steady"].clone();
+    let skips = env.read_state()["recordedSkips"]["steady"].clone();
     assert_eq!(
         skips[0]["reason"], "missed",
         "a rescan must not quietly absorb the Ticks nobody reached: {skips}"

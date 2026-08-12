@@ -190,7 +190,7 @@ fn different_tasks_get_spread_across_the_window() {
     let window = Duration::minutes(5);
 
     let offsets: Vec<i64> = (0..40)
-        .map(|n| jitter::offset(&format!("proj/task-{n}"), window).num_seconds())
+        .map(|n| jitter::offset(&format!("task-{n}"), window).num_seconds())
         .collect();
 
     assert!(

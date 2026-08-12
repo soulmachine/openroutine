@@ -54,7 +54,7 @@
       <pre><code>git clone https://github.com/soulmachine/openroutine
 cd openroutine
 cargo install --path .
-openroutine init .          <span class="c"># a config, and a sample task</span></code></pre>
+openroutine init            <span class="c"># a config, and a sample task to copy</span></code></pre>
       <div class="cta">
         <a class="btn" href="/docs">Read the docs</a>
         <a class="btn ghost" href="https://github.com/soulmachine/openroutine">View on GitHub</a>
@@ -71,10 +71,10 @@ openroutine init .          <span class="c"># a config, and a sample task</span>
       </p>
       <div class="split">
         <pre><code><span class="k">---</span>
+<span class="k">name:</span> todo-digest
 <span class="k">description:</span> Nightly TODO/FIXME triage
 <span class="k">cron:</span> "0 2 * * *"
 <span class="k">agent:</span> claude
-<span class="k">timeout:</span> 30m
 <span class="k">---</span>
 
 Review all open TODO and FIXME comments in this repository.
@@ -82,11 +82,12 @@ For any that are trivially fixable, fix them and open a pull
 request. Summarize everything else in reports/todo-digest.md.</code></pre>
         <div>
           <p>
-            Drop that in your repo as <code>todo-digest.cron.md</code> and it is the complete
-            definition — diffed, code-reviewed, and greppable like everything else you commit.
+            Save that in your repo as <code>todo-digest.md</code>, register it once with
+            <code>openroutine add</code>, and it is the complete definition — diffed,
+            code-reviewed, and greppable like everything else you commit.
           </p>
           <p>
-            A single Rust daemon watches your registered projects, schedules everything
+            A single Rust daemon runs your registered task files: it schedules everything
             in-process, runs each task through the agent CLI you configure, and serves a REST
             fire endpoint plus a local web UI for history, logs, and pause/resume.
           </p>
@@ -111,9 +112,9 @@ request. Summarize everything else in reports/todo-digest.md.</code></pre>
         <div class="card">
           <h3>Tasks live in your repo</h3>
           <p>
-            Every field — schedule, agent, timeout, <code>disabled</code> — is frontmatter in a
-            <code>*.cron.md</code> file. Turning a task off is a commit your reviewer can see, not
-            invisible state in someone’s account.
+            Every field — schedule, agent, <code>disabled</code> — is frontmatter in a
+            markdown file. Turning a task off is a commit your reviewer can see, not invisible
+            state in someone’s account.
           </p>
         </div>
         <div class="card">
@@ -121,8 +122,8 @@ request. Summarize everything else in reports/todo-digest.md.</code></pre>
           <p>
             Not launchd, not crontab — those run agents in a stripped environment with no
             <code>PATH</code> or API keys, and are where agent jobs quietly go to die. Owning the
-            scheduler buys identical behaviour on macOS and Linux, real environments, hot reload,
-            and honest bookkeeping.
+            scheduler buys identical behaviour on macOS and Linux, real environments, and honest
+            bookkeeping.
           </p>
         </div>
         <div class="card">
@@ -171,7 +172,7 @@ request. Summarize everything else in reports/todo-digest.md.</code></pre>
               <th scope="row">Where tasks are defined</th>
               <td>Web UI / <code>/schedule</code>, stored in your claude.ai account</td>
               <td>Chat or the Scheduled page, stored in your OpenAI account</td>
-              <td class="mine"><code>*.cron.md</code> files in your repo</td>
+              <td class="mine">Markdown files in your repo</td>
             </tr>
             <tr>
               <th scope="row">Agents</th>
@@ -183,7 +184,7 @@ request. Summarize everything else in reports/todo-digest.md.</code></pre>
               <th scope="row">Triggers</th>
               <td>Schedules, API endpoint, GitHub events</td>
               <td>Schedules and change-monitoring, hourly at most</td>
-              <td class="mine">Cron, one-shot, and manual schedules; REST fire endpoint</td>
+              <td class="mine">Cron and one-shot schedules; REST fire endpoint</td>
             </tr>
             <tr>
               <th scope="row">Management UI</th>
@@ -229,9 +230,12 @@ openroutine logs &lt;task&gt; --follow  <span class="c"># tail the latest run</s
 openroutine pause --all           <span class="c"># stop everything firing, keep the daemon up</span>
 openroutine open                  <span class="c"># the local web UI, no account</span></code></pre>
       <p>
-        Tasks are files, so everything else is ordinary editing: drop a <code>.cron.md</code> in a
-        registered directory and it schedules within seconds; <code>git pull</code> one in and the
-        same happens, flagged as new so you notice.
+        Tasks are files, so everything else is ordinary editing: register one with
+        <code>openroutine add</code>, then edit it freely — a task re-reads its own file as it is
+        about to run, so the prompt you just fixed is the one that runs. Nothing is watched or
+        polled; <code>openroutine reload</code> is what makes an edit visible everywhere else, and
+        what a task that isn’t going to run — finished, broken, or switched off with
+        <code>disabled</code> — needs before it notices at all.
       </p>
       <p>
         To leave it running on a machine you don’t sit at, <code>openroutine install</code>
@@ -249,7 +253,7 @@ openroutine open                  <span class="c"># the local web UI, no account
         The daemon serves a REST API on <code>127.0.0.1:7373</code>, guarded by a bearer token, so
         alerting systems, deploy pipelines, and git hooks can start a run.
       </p>
-      <pre><code>curl -X POST http://127.0.0.1:7373/v1/tasks/myrepo/todo-digest/fire \
+      <pre><code>curl -X POST http://127.0.0.1:7373/v1/tasks/todo-digest/fire \
   -H "Authorization: Bearer $(openroutine token)" \
   -d '{"text": "Sentry alert SEN-4521 fired in prod."}'</code></pre>
       <p class="note">
