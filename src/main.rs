@@ -54,6 +54,28 @@ enum Command {
     },
     /// Stop watching a directory.
     Remove { dir: PathBuf },
+    /// Write a starter config and a sample Task.
+    Init {
+        /// The directory to register and put the sample in.
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+    },
+    /// Summarise the daemon and what it would be running.
+    Status,
+    /// Show a Task's most recent Run.
+    Logs {
+        task: String,
+        /// Keep printing as the Run writes more.
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Work out what a Task would do.
+    Run {
+        task: String,
+        /// Describe the Run instead of starting one.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[tokio::main]
@@ -113,6 +135,10 @@ async fn main() -> Result<()> {
         Command::List => list(&config_path),
         Command::Add { dir, name } => add(&config_path, &dir, name.as_deref()),
         Command::Remove { dir } => remove(&config_path, &dir),
+        Command::Init { dir } => init(&config_path, &dir),
+        Command::Status => status(&config_path),
+        Command::Logs { task, follow } => logs(&config_path, &task, follow),
+        Command::Run { task, dry_run } => run(&config_path, &task, dry_run),
     }
 }
 
@@ -255,6 +281,233 @@ fn write_document(path: &std::path::Path, document: &toml_edit::DocumentMut) -> 
         .with_context(|| format!("writing config at {}", temporary.display()))?;
     std::fs::rename(&temporary, path)
         .with_context(|| format!("replacing config at {}", path.display()))
+}
+
+/// Writes a config and a sample Task, so the first five minutes need no
+/// documentation.
+fn init(config_path: &std::path::Path, dir: &std::path::Path) -> Result<()> {
+    if config_path.exists() {
+        anyhow::bail!(
+            "{} already exists; edit it, or use `add` to register another directory",
+            config_path.display()
+        );
+    }
+    let dir = dir
+        .canonicalize()
+        .with_context(|| format!("no such directory: {}", dir.display()))?;
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(config_path, starter_config(&dir))
+        .with_context(|| format!("writing {}", config_path.display()))?;
+
+    let sample = dir.join("hello.cron.md");
+    if !sample.exists() {
+        std::fs::write(&sample, SAMPLE_TASK)
+            .with_context(|| format!("writing {}", sample.display()))?;
+    }
+
+    println!("Wrote config {}", config_path.display());
+    println!("Wrote sample task {}", sample.display());
+    println!("\nTry:  openroutine list");
+    println!("      openroutine run hello --dry-run");
+    Ok(())
+}
+
+fn starter_config(dir: &std::path::Path) -> String {
+    format!(
+        "# openroutine — https://openroutine.dev\n\
+         \n\
+         # The agent a task gets when it names none.\n\
+         default_agent = \"claude\"\n\
+         \n\
+         # Directories whose *.cron.md files should be scheduled.\n\
+         [[projects]]\n\
+         path = {dir:?}\n\
+         \n\
+         # An agent is a command template. {{prompt}} is substituted as a\n\
+         # single argument; without it, the prompt arrives on stdin.\n\
+         [agents.claude]\n\
+         cmd = \"claude -p {{prompt}}\"\n\
+         \n\
+         [agents.codex]\n\
+         cmd = \"codex exec {{prompt}}\"\n",
+        dir = dir.display().to_string(),
+    )
+}
+
+const SAMPLE_TASK: &str = "---\n\
+     description: Say hello, nightly\n\
+     cron: \"0 9 * * *\"\n\
+     ---\n\
+     \n\
+     Say hello, then stop. This is a sample task — edit or delete it.\n";
+
+/// Summarises the daemon and what it would be running.
+fn status(config_path: &std::path::Path) -> Result<()> {
+    let config = Config::load(config_path)?;
+    let state_dir = config.state_dir()?;
+    let scan = openroutine::discovery::scan_all(&config);
+    let state = openroutine::state::State::load(&state_dir).unwrap_or_default();
+
+    let broken = scan.tasks.iter().filter(|task| task.is_broken()).count();
+    let flagged = scan
+        .tasks
+        .iter()
+        .filter(|task| {
+            task.novelty(state.last_run_digest(&task.id))
+                .note()
+                .is_some()
+        })
+        .count();
+    let unreachable = config
+        .projects
+        .iter()
+        .filter(|project| !scan.reachable_projects.contains(&project.resolved_name()))
+        .count();
+
+    let daemon = if openroutine::lock::is_held(&state_dir) {
+        match openroutine::lock::holder(&state_dir) {
+            Some(pid) => format!("running (pid {pid})"),
+            None => "running".to_string(),
+        }
+    } else {
+        "not running".to_string()
+    };
+
+    println!("daemon:   {daemon}");
+    println!("config:   {}", config_path.display());
+    println!("state:    {}", state_dir.display());
+    println!(
+        "projects: {}{}",
+        config.projects.len(),
+        if unreachable > 0 {
+            format!(" ({unreachable} unreachable)")
+        } else {
+            String::new()
+        }
+    );
+    println!(
+        "tasks:    {} ready, {broken} broken, {flagged} flagged",
+        scan.tasks.len() - broken
+    );
+    Ok(())
+}
+
+/// Prints a Task's most recent Run, straight from disk.
+fn logs(config_path: &std::path::Path, wanted: &str, follow: bool) -> Result<()> {
+    let config = Config::load(config_path)?;
+    let scan = openroutine::discovery::scan_all(&config);
+    let task = resolve(&scan.tasks, wanted)?;
+
+    let runs = openroutine::run::task_runs_dir(&config.state_dir()?, &task.id);
+    let mut directories: Vec<PathBuf> = std::fs::read_dir(&runs)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    directories.sort();
+
+    let Some(latest) = directories.last() else {
+        println!("no runs yet for {}", task.id);
+        return Ok(());
+    };
+
+    let log = latest.join(openroutine::run::RUN_LOG);
+    if follow {
+        follow_file(&log)
+    } else {
+        let contents =
+            std::fs::read_to_string(&log).with_context(|| format!("reading {}", log.display()))?;
+        print!("{contents}");
+        Ok(())
+    }
+}
+
+/// Prints a file and keeps printing as it grows.
+fn follow_file(path: &std::path::Path) -> Result<()> {
+    use std::io::{Read, Seek, Write};
+
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut buffer = vec![0u8; 8192];
+    let mut stdout = std::io::stdout();
+
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            std::thread::sleep(Duration::from_millis(200));
+            let length = file.metadata()?.len();
+            if length < file.stream_position()? {
+                // Truncated or replaced under us; start again from the top.
+                file.seek(std::io::SeekFrom::Start(0))?;
+            }
+            continue;
+        }
+        match stdout.write_all(&buffer[..read]) {
+            Ok(()) => stdout.flush().ok(),
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+    }
+}
+
+/// Describes what a Run would do, or explains why it cannot.
+fn run(config_path: &std::path::Path, wanted: &str, dry_run: bool) -> Result<()> {
+    let config = Config::load(config_path)?;
+    let scan = openroutine::discovery::scan_all(&config);
+    let task = resolve(&scan.tasks, wanted)?;
+
+    if !dry_run {
+        anyhow::bail!(
+            "firing a task goes through the daemon's API, which this build does not have yet; \
+             use `--dry-run` to see what {} would do",
+            task.id
+        );
+    }
+
+    let plan =
+        openroutine::plan::render(task, &config, SystemClock.now(), &openroutine::zone::host())
+            .map_err(|reason| anyhow::anyhow!("{}: {reason}", task.id))?;
+    print!("{plan}");
+    Ok(())
+}
+
+/// Finds the Task someone meant: a full `<project>/<name>` id, or a bare
+/// name where only one Task answers to it.
+fn resolve<'a>(
+    tasks: &'a [openroutine::discovery::ScannedTask],
+    wanted: &str,
+) -> Result<&'a openroutine::discovery::ScannedTask> {
+    if let Some(exact) = tasks.iter().find(|task| task.id == wanted) {
+        return Ok(exact);
+    }
+
+    let matches: Vec<&openroutine::discovery::ScannedTask> = tasks
+        .iter()
+        .filter(|task| {
+            task.id
+                .split_once('/')
+                .is_some_and(|(_, name)| name == wanted)
+        })
+        .collect();
+
+    match matches.as_slice() {
+        [only] => Ok(only),
+        [] => anyhow::bail!("no task called {wanted:?}"),
+        several => anyhow::bail!(
+            "{wanted:?} is ambiguous; say which one:\n{}",
+            several
+                .iter()
+                .map(|task| format!("  {}", task.id))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
 }
 
 async fn serve(config_path: &std::path::Path) -> Result<()> {

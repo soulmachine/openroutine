@@ -64,3 +64,29 @@ impl DaemonLock {
         &self.path
     }
 }
+
+/// Whether a Daemon is holding the lock right now.
+///
+/// Asks without taking it: a shared lock cannot be had while someone holds
+/// the exclusive one, and the probe leaves the file untouched either way.
+pub fn is_held(state_dir: &Path) -> bool {
+    let path = state_dir.join(LOCK_FILE);
+    let Ok(file) = std::fs::File::open(&path) else {
+        return false;
+    };
+    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
+    // Safety: `flock` on a descriptor we own, non-blocking.
+    let shared = unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) };
+    if shared == 0 {
+        unsafe { libc::flock(fd, libc::LOCK_UN) };
+        return false;
+    }
+    std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock
+}
+
+/// The pid recorded by whoever holds the lock.
+pub fn holder(state_dir: &Path) -> Option<String> {
+    let recorded = std::fs::read_to_string(state_dir.join(LOCK_FILE)).ok()?;
+    let recorded = recorded.trim().to_string();
+    (!recorded.is_empty()).then_some(recorded)
+}

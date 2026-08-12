@@ -14,6 +14,7 @@ pub mod discovery;
 pub mod jitter;
 pub mod list;
 pub mod lock;
+pub mod plan;
 pub mod run;
 pub mod runner;
 pub mod schedule;
