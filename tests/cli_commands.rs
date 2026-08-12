@@ -417,3 +417,24 @@ fn an_agent_that_is_installed_says_nothing() {
         "no complaint about an agent that is right there:\n{out}"
     );
 }
+
+#[test]
+fn the_dashboard_command_still_answers_to_its_old_name() {
+    let env = TestEnv::new();
+    env.write_config_with_no_tasks();
+
+    // `--help` rather than the command itself: firing it would launch a
+    // browser, and what is under test is name resolution, not the browser.
+    for spelling in ["dashboard", "open"] {
+        let output = env.run(&[spelling, "--help"]);
+        assert!(
+            output.status.success(),
+            "{spelling:?} should resolve: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("web UI"),
+            "and reach the dashboard command, for {spelling:?}"
+        );
+    }
+}

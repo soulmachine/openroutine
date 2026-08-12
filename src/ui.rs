@@ -41,7 +41,7 @@ struct SignIn {
 
 /// The page, and the one-time link that signs it in.
 ///
-/// `openroutine open` puts the token in the URL; it is exchanged for a
+/// `openroutine dashboard` puts the token in the URL; it is exchanged for a
 /// session cookie immediately and the page is reloaded without it, so the
 /// long-lived token never sits in history or in browser storage.
 async fn index(State(api): State<Api>, Query(sign_in): Query<SignIn>) -> Response {

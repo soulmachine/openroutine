@@ -95,7 +95,10 @@ enum Command {
         all: bool,
     },
     /// Open the local web UI in a browser.
-    Open,
+    // `open` was this command's name through 0.2 and 1.0.0; kept as an alias
+    // so the rename costs nobody their muscle memory or their scripts.
+    #[command(alias = "open")]
+    Dashboard,
     /// Print the API token, or replace it.
     Token {
         /// Replace the token. Anything using the old one stops working.
@@ -179,7 +182,7 @@ async fn main() -> Result<()> {
         Command::Install { print } => install(&config_path, print),
         Command::Uninstall => uninstall(&config_path),
         Command::Token { rotate } => token(&config_path, rotate),
-        Command::Open => open_ui(&config_path),
+        Command::Dashboard => dashboard(&config_path),
         Command::Pause { task, all } => hold(&config_path, task.as_deref(), all, true).await,
         Command::Resume { task, all } => hold(&config_path, task.as_deref(), all, false).await,
     }
@@ -779,7 +782,7 @@ async fn call_api(
 /// The token rides in the URL once and is exchanged for a session cookie
 /// straight away, so the long-lived secret does not end up in browser
 /// storage — the same shape Jupyter uses, for the same reason.
-fn open_ui(config_path: &std::path::Path) -> Result<()> {
+fn dashboard(config_path: &std::path::Path) -> Result<()> {
     let config = Config::load(config_path)?;
     let state_dir = config.state_dir()?;
     if !openroutine::lock::is_held(&state_dir) {

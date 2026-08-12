@@ -68,7 +68,7 @@ openroutine run <task> --dry-run  # exactly what a run would do, spawning nothin
 openroutine run <task>            # fire one now, through the daemon
 openroutine logs <task> --follow  # tail the latest run
 openroutine pause --all           # stop everything firing, keep the daemon up
-openroutine open                  # the local web UI, no account
+openroutine dashboard             # the local web UI, no account
 ```
 
 Tasks are files, so everything else is ordinary editing. A task re-reads its
