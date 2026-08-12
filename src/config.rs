@@ -209,11 +209,20 @@ impl ProjectConfig {
     }
 }
 
+/// An XDG base directory, if the environment sets a usable one. The spec says
+/// a relative value is invalid and must be treated as unset, so a stray
+/// `XDG_STATE_HOME=state` resolves under `$HOME` rather than scattering state
+/// relative to whatever directory the daemon happened to start in.
+fn xdg_base_dir(variable: &str) -> Option<PathBuf> {
+    let value = PathBuf::from(std::env::var_os(variable)?);
+    value.is_absolute().then_some(value)
+}
+
 /// `$XDG_STATE_HOME/openroutine`, else `~/.local/state/openroutine` — the same
 /// path on macOS and Linux, which is the point of owning the scheduler.
 pub fn default_state_dir() -> Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(xdg).join("openroutine"));
+    if let Some(xdg) = xdg_base_dir("XDG_STATE_HOME") {
+        return Ok(xdg.join("openroutine"));
     }
     let home = std::env::var_os("HOME").context("neither XDG_STATE_HOME nor HOME is set")?;
     Ok(PathBuf::from(home)
@@ -224,8 +233,8 @@ pub fn default_state_dir() -> Result<PathBuf> {
 
 /// `$XDG_CONFIG_HOME/openroutine/config.toml`, else `~/.config/...`.
 pub fn default_config_path() -> Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(xdg).join("openroutine").join("config.toml"));
+    if let Some(xdg) = xdg_base_dir("XDG_CONFIG_HOME") {
+        return Ok(xdg.join("openroutine").join("config.toml"));
     }
     let home = std::env::var_os("HOME").context("neither XDG_CONFIG_HOME nor HOME is set")?;
     Ok(PathBuf::from(home)

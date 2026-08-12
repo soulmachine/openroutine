@@ -164,6 +164,50 @@ fn nothing_is_written_outside_the_sandbox() {
 }
 
 #[test]
+fn a_relative_xdg_state_home_falls_back_to_home() {
+    let env = TestEnv::new();
+    env.write_task("todo-digest", NIGHTLY);
+    env.write_config();
+
+    // The XDG spec says a base directory that is not absolute is invalid and
+    // must be treated as unset. Honouring one would scatter state relative to
+    // whatever directory the daemon happened to be started in — which, under a
+    // service manager, is nowhere the user would think to look.
+    let home = env.path().join("home");
+    let cwd = env.path().join("cwd");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let mut child = Command::new(BIN)
+        .args(["serve", "--config"])
+        .arg(env.config_path())
+        .env("XDG_STATE_HOME", "relative-state")
+        .env("HOME", &home)
+        .current_dir(&cwd)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let fallback = home
+        .join(".local")
+        .join("state")
+        .join("openroutine")
+        .join("scheduled-tasks.json");
+    wait_until("the daemon to write its state file under HOME", || {
+        fallback.exists()
+    });
+
+    terminate(&mut child);
+    wait_for_exit(&mut child);
+
+    assert!(
+        !cwd.join("relative-state").exists(),
+        "a relative XDG_STATE_HOME must not be resolved against the daemon's cwd"
+    );
+}
+
+#[test]
 fn a_task_added_while_serving_is_picked_up_without_a_restart() {
     let env = TestEnv::new();
     env.write_config();
