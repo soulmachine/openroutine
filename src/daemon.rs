@@ -150,11 +150,23 @@ impl Daemon {
         self.broken_count
     }
 
+    /// Closes out Runs that were still going when a previous Daemon stopped.
+    ///
+    /// Only the holder of the single-daemon lock may call this: a record left
+    /// `running` is evidence of a crash only when nobody else could be
+    /// writing it.
+    pub fn recover_interrupted_runs(&self) {
+        let closed = run::close_abandoned_runs(&self.state_dir, self.clock.now());
+        if closed > 0 {
+            tracing::warn!("{closed} run(s) were interrupted when the daemon last stopped");
+        }
+    }
+
     /// Rescans every Project and recomputes when each Task next fires.
     pub async fn reload(&mut self) -> Result<()> {
         let now = self.clock.now();
         self.reload_config();
-        self.state = State::load(&self.state_dir)?;
+        self.state = State::load_and_quarantine(&self.state_dir, now)?;
 
         let scan = discovery::scan_all(&self.config);
         let present: std::collections::BTreeSet<String> =
@@ -470,6 +482,21 @@ impl Daemon {
         self.scheduled[index].pending = pending.map(|tick| self.plan(&id, &definition, tick));
     }
 
+    /// How many Runs this Task keeps: its Project's setting, else the
+    /// global one.
+    fn retention_for(&self, task_id: &str) -> usize {
+        task_id
+            .split_once('/')
+            .and_then(|(project, _)| {
+                self.config
+                    .projects
+                    .iter()
+                    .find(|candidate| candidate.resolved_name() == project)
+            })
+            .and_then(|project| project.max_runs_per_task)
+            .unwrap_or_else(|| self.config.max_runs_per_task())
+    }
+
     /// Pairs a Tick with the moment it will actually fire.
     fn plan(&self, id: &str, definition: &TaskDefinition, tick: DateTime<Utc>) -> Pending {
         Pending {
@@ -576,6 +603,15 @@ impl Daemon {
             entry.last_run_digest = Some(digest);
         }
         self.state.save(&self.state_dir)?;
+
+        let keep = self.retention_for(&task_id);
+        match run::prune_runs(&self.state_dir, &task_id, keep) {
+            Ok(0) => {}
+            Ok(pruned) => {
+                tracing::info!(task = %task_id, "pruned {pruned} old run(s), keeping {keep}")
+            }
+            Err(error) => tracing::warn!(task = %task_id, "pruning old runs: {error:#}"),
+        }
 
         let clock = Arc::clone(&self.clock);
         let piped_prompt = command.prompt_on_stdin.then_some(prompt);

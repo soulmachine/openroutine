@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 /// An unattended Agent that hangs is the worst failure mode, so Runs are
 /// bounded unless the author says otherwise.
 const DEFAULT_TIMEOUT: chrono::Duration = chrono::Duration::hours(1);
+/// Enough history to explain recent behaviour; not enough to fill a disk.
+const DEFAULT_MAX_RUNS_PER_TASK: usize = 50;
 /// Enough to debug a Run; not enough to fill a disk.
 const DEFAULT_MAX_LOG_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -30,6 +32,9 @@ pub struct Config {
     /// and under whatever the Task itself sets.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// How many Runs of each Task are kept on disk.
+    #[serde(default)]
+    pub max_runs_per_task: Option<usize>,
     /// How much of a Run's output is kept before the log is truncated.
     #[serde(default)]
     pub max_log_bytes: Option<u64>,
@@ -53,6 +58,9 @@ pub struct ProjectConfig {
     /// never insists on writing into someone's repository.
     #[serde(default)]
     pub crontab_md: Option<bool>,
+    /// Runs kept per Task here, overriding the global setting.
+    #[serde(default)]
+    pub max_runs_per_task: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -95,6 +103,22 @@ impl Config {
             }
         }
 
+        for keep in std::iter::once(config.max_runs_per_task)
+            .chain(
+                config
+                    .projects
+                    .iter()
+                    .map(|project| project.max_runs_per_task),
+            )
+            .flatten()
+        {
+            if keep == 0 {
+                anyhow::bail!(
+                    "`max_runs_per_task` must be at least 1; a Task keeps its current Run"
+                );
+            }
+        }
+
         for (name, agent) in &config.agents {
             crate::runner::check_placeholders(&agent.cmd)
                 .map_err(|reason| anyhow::anyhow!("agent {name:?}: {reason}"))
@@ -109,6 +133,11 @@ impl Config {
             Some(dir) => Ok(dir.clone()),
             None => default_state_dir(),
         }
+    }
+
+    /// Runs kept per Task before the oldest are pruned.
+    pub fn max_runs_per_task(&self) -> usize {
+        self.max_runs_per_task.unwrap_or(DEFAULT_MAX_RUNS_PER_TASK)
     }
 
     /// Output kept per Run before truncation.

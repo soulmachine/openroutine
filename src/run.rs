@@ -46,11 +46,15 @@ pub struct RunRecord {
 }
 
 impl RunRecord {
+    /// Writes the record beside itself and renames, so a crash mid-write
+    /// leaves the previous record rather than a torn one.
     pub fn write_to(&self, run_dir: &Path) -> Result<()> {
         let path = run_dir.join(RUN_RECORD);
+        let temporary = run_dir.join("run.json.tmp");
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, format!("{json}\n"))
-            .with_context(|| format!("writing {}", path.display()))
+        std::fs::write(&temporary, format!("{json}\n"))
+            .with_context(|| format!("writing {}", temporary.display()))?;
+        std::fs::rename(&temporary, &path).with_context(|| format!("replacing {}", path.display()))
     }
 }
 
@@ -75,7 +79,9 @@ pub fn create_run_dir(
         let run_id = if suffix == 1 {
             base.clone()
         } else {
-            format!("{base}-{suffix}")
+            // Padded so `-10` still sorts after `-2`: run directories are
+            // ordered by name wherever age matters.
+            format!("{base}-{suffix:03}")
         };
         let dir = parent.join(&run_id);
         match std::fs::create_dir(&dir) {
@@ -159,4 +165,99 @@ pub fn capture_output(mut reader: std::io::PipeReader, log_path: &Path, cap: u64
     }
     log.flush().context("flushing the log")?;
     Ok(written)
+}
+
+/// Keeps only the most recent `keep` Runs of a Task.
+///
+/// A frequent Task would otherwise fill a disk with history nobody reads.
+pub fn prune_runs(state_dir: &Path, task_id: &str, keep: usize) -> Result<usize> {
+    let dir = task_runs_dir(state_dir, task_id);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(0);
+    };
+
+    // Run ids are sortable start instants, so name order is age order.
+    let mut runs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    runs.sort();
+
+    let mut removed = 0;
+    for old in runs.iter().take(runs.len().saturating_sub(keep)) {
+        std::fs::remove_dir_all(old).with_context(|| format!("pruning {}", old.display()))?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+/// Marks Runs that were still `running` when the Daemon disappeared.
+///
+/// Only ever called while holding the single-daemon lock, so a record left
+/// running belongs to a process that is gone.
+pub fn close_abandoned_runs(state_dir: &Path, finished_at: DateTime<Utc>) -> usize {
+    let mut closed = 0;
+    let root = state_dir.join(RUNS_DIR);
+
+    for record in walk_run_records(&root) {
+        let raw = match std::fs::read_to_string(&record) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(run = %record.display(), "cannot read run record: {error}");
+                continue;
+            }
+        };
+        let mut parsed = match serde_json::from_str::<RunRecord>(&raw) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                tracing::warn!(run = %record.display(), "run record is unreadable: {error}");
+                continue;
+            }
+        };
+        if parsed.status != RunStatus::Running {
+            continue;
+        }
+
+        parsed.status = RunStatus::Interrupted;
+        parsed.finished_at = Some(finished_at);
+        if let Some(dir) = record.parent() {
+            match parsed.write_to(dir) {
+                Ok(()) => {
+                    tracing::warn!(task = %parsed.task_id, run = %parsed.run_id, "run was interrupted");
+                    closed += 1;
+                }
+                Err(error) => tracing::warn!(
+                    run = %record.display(),
+                    "cannot record that this run was interrupted: {error:#}"
+                ),
+            }
+        }
+    }
+    closed
+}
+
+/// Every `run.json` under `runs/<project>/<task>/<run>/`.
+fn walk_run_records(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(projects) = std::fs::read_dir(root) else {
+        return found;
+    };
+    for project in projects.flatten() {
+        let Ok(tasks) = std::fs::read_dir(project.path()) else {
+            continue;
+        };
+        for task in tasks.flatten() {
+            let Ok(runs) = std::fs::read_dir(task.path()) else {
+                continue;
+            };
+            for run in runs.flatten() {
+                let record = run.path().join(RUN_RECORD);
+                if record.is_file() {
+                    found.push(record);
+                }
+            }
+        }
+    }
+    found
 }

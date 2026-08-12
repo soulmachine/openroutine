@@ -7,6 +7,11 @@ use openroutine::config::{self, Config};
 use openroutine::daemon::Daemon;
 use std::path::PathBuf;
 use std::time::Duration;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+/// Where the Daemon keeps its own diagnostics, beside its state.
+const DAEMON_LOG: &str = "daemon.log";
 
 /// How often the scheduler looks for due Ticks. Minute-resolution cron needs
 /// nothing finer; the cost of a pass is a comparison per Task.
@@ -53,22 +58,55 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_target(false)
-        // Diagnostics belong on stderr so `openroutine list | ...` stays a
-        // clean stream of report.
-        .with_writer(std::io::stderr)
-        .init();
-
     let cli = Cli::parse();
+    // Diagnostics belong on stderr so `openroutine list | ...` stays a clean
+    // stream of report. `serve` adds a file beside its state as well.
+    let to_stderr = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_writer(std::io::stderr);
+
+    let config_path = match cli.config.clone() {
+        Some(path) => path,
+        None => config::default_config_path()?,
+    };
+
+    // `serve` runs for days, so its diagnostics are also kept beside its
+    // state. Only once the config says where that is — a daemon must never
+    // drop a log file in whatever directory it happened to be started from.
+    let daemon_log = matches!(cli.command, Command::Serve)
+        .then(|| {
+            Config::load(&config_path)
+                .and_then(|config| config.state_dir())
+                .ok()
+        })
+        .flatten()
+        .and_then(|state_dir| {
+            std::fs::create_dir_all(&state_dir).ok()?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(state_dir.join(DAEMON_LOG))
+                .ok()?;
+            Some(
+                tracing_subscriber::fmt::layer()
+                    .with_target(false)
+                    .with_ansi(false)
+                    .with_writer(std::sync::Arc::new(file)),
+            )
+        });
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
     let config_path = match cli.config {
         Some(path) => path,
         None => config::default_config_path()?,
     };
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(to_stderr)
+        .with(daemon_log)
+        .init();
 
     match cli.command {
         Command::Serve => serve(&config_path).await,
@@ -231,6 +269,14 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(daemon.state_dir())
         .with_context(|| format!("creating state dir {}", daemon.state_dir().display()))?;
 
+    // Held for the whole run: a second scheduler over one state directory
+    // would fire the same Tasks twice.
+    let lock = openroutine::lock::DaemonLock::acquire(daemon.state_dir())?;
+    tracing::debug!(lock = %lock.path().display(), "holding the daemon lock");
+
+    // Safe only because the lock says no other Daemon is alive: any Run
+    // still marked running belongs to a process that is gone.
+    daemon.recover_interrupted_runs();
     daemon.reload().await?;
     tracing::info!(
         state_dir = %daemon.state_dir().display(),

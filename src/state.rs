@@ -96,23 +96,67 @@ impl State {
         state_dir.join(STATE_FILE)
     }
 
+    /// Reads the state without ever writing.
+    ///
+    /// A file that cannot be parsed yields an empty state and is left exactly
+    /// where it is — setting it aside is the Daemon's job, under its lock.
     pub fn load(state_dir: &Path) -> Result<Self> {
+        Self::read(state_dir).map(|(state, _)| state)
+    }
+
+    /// Reads the state and, if it is unreadable, sets it aside so a fresh
+    /// one can take its place. Only for the holder of the daemon lock.
+    pub fn load_and_quarantine(state_dir: &Path, now: DateTime<Utc>) -> Result<Self> {
+        let (state, damaged) = Self::read(state_dir)?;
+        if let Some(path) = damaged {
+            let aside =
+                path.with_extension(format!("json.corrupt-{}", now.format("%Y%m%dT%H%M%SZ")));
+            tracing::error!(
+                "run state at {} could not be read; moving it to {} and starting fresh — \
+                 history is lost, tasks are not",
+                path.display(),
+                aside.display()
+            );
+            std::fs::rename(&path, &aside)
+                .with_context(|| format!("setting aside {}", path.display()))?;
+        }
+        Ok(state)
+    }
+
+    /// The state, plus the path of a file that could not be parsed.
+    fn read(state_dir: &Path) -> Result<(Self, Option<PathBuf>)> {
         let path = Self::path_in(state_dir);
-        match std::fs::read_to_string(&path) {
-            Ok(raw) => Ok(serde_json::from_str(&raw)
-                .with_context(|| format!("parsing state at {}", path.display()))?),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((Self::default(), None));
+            }
+            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+        };
+
+        match serde_json::from_str(&raw) {
+            Ok(state) => Ok((state, None)),
+            Err(error) => {
+                tracing::warn!("run state at {} is unreadable: {error}", path.display());
+                Ok((Self::default(), Some(path)))
+            }
         }
     }
 
+    /// Writes the state so a reader only ever sees a whole one.
+    ///
+    /// Written beside the real file and renamed over it: a crash mid-write
+    /// leaves either the old content or the new, never a torn mixture.
     pub fn save(&self, state_dir: &Path) -> Result<()> {
         std::fs::create_dir_all(state_dir)
             .with_context(|| format!("creating state dir {}", state_dir.display()))?;
         let path = Self::path_in(state_dir);
+        let temporary = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, format!("{json}\n"))
-            .with_context(|| format!("writing {}", path.display()))
+
+        std::fs::write(&temporary, format!("{json}\n"))
+            .with_context(|| format!("writing {}", temporary.display()))?;
+        std::fs::rename(&temporary, &path).with_context(|| format!("replacing {}", path.display()))
     }
 
     /// Records a Skip, keeping only the most recent ones.
