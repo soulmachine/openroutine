@@ -9,13 +9,13 @@
 Deploys are **manual** right now:
 
 ```bash
-npx wrangler deploy      # from this branch's root
+cd site && npx wrangler deploy
 ```
 
 Two things are still unconfigured, both dashboard-only. Neither is required for the site to
 work; the first removes the manual step, the second makes `www` resolve.
 
-- [ ] Workers Builds — auto-deploy on push to `site`
+- [ ] Workers Builds — auto-deploy on push to `main`
 - [ ] `www.openroutine.dev` → 301 to the apex
 
 > Wrangler's OAuth token carries `zone (read)` but no DNS or Ruleset write scope, so the `www`
@@ -35,23 +35,29 @@ git repo.
 
    | Setting | Value |
    | :-- | :-- |
-   | Root directory | `/` |
+   | Root directory | `site/` |
    | Build command | **leave empty** |
    | Deploy command | `npx wrangler deploy` |
 
-   There is no build step — `public/` is already the finished site.
+   There is no build step — `public/` is already the finished site. The root directory is what
+   makes `wrangler.toml` findable; without it the deploy runs at the repo root and fails.
 
-4. **Branch control → production branch: `site`.**
-5. **Turn OFF "Builds for non-production branches."**
+4. **Branch control → production branch: `main`.**
+5. **Settings → Build → Build watch paths → include `site/*`.**
 
-Step 5 matters: `main` holds the Rust project and has no `wrangler.toml`, so leaving
-non-production builds on means every code commit starts a build that fails and emails you.
+Step 5 is what makes a shared repo work. Include paths default to `[*]`, so without it every
+Rust commit starts a build; with it, a commit that touches no path under `site/` is skipped
+before a build is ever queued.
+
+Leave *builds for non-production branches* **on**. A PR touching `site/` then gets a preview
+via `npx wrangler versions upload` without promoting it, and the watch path keeps code-only
+branches quiet — the reason that toggle used to be off is gone.
 
 The Worker name in the dashboard must stay `openroutine-site` — it has to match `name` in
 `wrangler.toml` or the build fails.
 
-Afterwards, confirm it rather than assuming: make a trivial edit on `site`, push, and watch it
-go live without running anything.
+Afterwards, confirm it rather than assuming, and confirm both halves: push a trivial edit under
+`site/` and watch it go live, then push a code-only commit and watch no build start.
 
 ## B. Redirect www to the apex
 
