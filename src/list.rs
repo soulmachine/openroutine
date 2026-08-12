@@ -23,7 +23,12 @@ struct Row {
 }
 
 /// Renders every Task, its health, and its next Tick as seen from `now`.
-pub fn render<Tz: TimeZone>(tasks: &[ScannedTask], now: DateTime<Utc>, zone: &Tz) -> String
+pub fn render<Tz: TimeZone>(
+    tasks: &[ScannedTask],
+    state: &crate::state::State,
+    now: DateTime<Utc>,
+    zone: &Tz,
+) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -31,7 +36,10 @@ where
         return "No tasks found.\n".to_string();
     }
 
-    let rows: Vec<Row> = tasks.iter().map(|task| row_for(task, now, zone)).collect();
+    let rows: Vec<Row> = tasks
+        .iter()
+        .map(|task| row_for(task, state, now, zone))
+        .collect();
 
     let mut widths = HEADINGS.map(str::len);
     for row in &rows {
@@ -56,14 +64,25 @@ where
     out
 }
 
-fn row_for<Tz: TimeZone>(task: &ScannedTask, now: DateTime<Utc>, zone: &Tz) -> Row
+fn row_for<Tz: TimeZone>(
+    task: &ScannedTask,
+    state: &crate::state::State,
+    now: DateTime<Utc>,
+    zone: &Tz,
+) -> Row
 where
     Tz::Offset: std::fmt::Display,
 {
     let mut notes: Vec<String> = task
-        .warnings()
-        .iter()
-        .map(|warning| format!("warning: {warning}"))
+        .novelty(state.last_run_digest(&task.id))
+        .note()
+        .map(str::to_string)
+        .into_iter()
+        .chain(
+            task.warnings()
+                .iter()
+                .map(|warning| format!("warning: {warning}")),
+        )
         .collect();
 
     let description = task.description().unwrap_or(NOT_APPLICABLE).to_string();

@@ -19,7 +19,7 @@ async fn fire(env: &TestEnv) -> AgentCall {
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
-    env.invocations()
+    env.calls()
         .into_iter()
         .next()
         .expect("the Agent should have run")

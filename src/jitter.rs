@@ -44,17 +44,5 @@ pub fn offset(task_id: &str, window: Duration) -> Duration {
     if seconds <= 0 {
         return Duration::zero();
     }
-    Duration::seconds((hash(task_id) % seconds as u64) as i64)
-}
-
-/// FNV-1a. Chosen for being small, stable across releases, and dependency
-/// free — the default hasher is explicitly not guaranteed stable, and an
-/// offset that moved between builds would defeat the point.
-fn hash(value: &str) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    value.bytes().fold(OFFSET_BASIS, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(PRIME)
-    })
+    Duration::seconds((crate::digest::fnv1a(task_id.as_bytes()) % seconds as u64) as i64)
 }

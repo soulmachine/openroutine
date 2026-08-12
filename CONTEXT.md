@@ -72,6 +72,10 @@ _Avoid_: watched directory, label, workspace
 A Task whose definition parses, validates, and names an Agent that exists. The opposite of Broken; the only state from which a Tick can produce a Run.
 _Avoid_: valid, healthy, ok
 
+**Familiar**:
+A Task whose definition is the one that last started a Run. A Task that has never run, or whose file has changed since it did, is flagged instead — registering a Project trusts its committers, so an arriving or edited Task is announced rather than blocked.
+_Avoid_: known, trusted, approved
+
 **Broken**:
 A Task whose file exists but whose definition fails to parse or validate — a bad schedule, a missing description, an Agent that isn't configured. Always surfaced visibly with its error; never silently unscheduled.
 _Avoid_: invalid, errored

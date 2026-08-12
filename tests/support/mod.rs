@@ -88,7 +88,8 @@ impl TestEnv {
     pub fn write_stub_agent(&self, exit_code: i32) {
         let script = format!(
             r#"#!/bin/sh
-record="$(mktemp {record_dir}/inv-XXXXXXXX)"
+seq=$(ls {record_dir}/*.args 2>/dev/null | wc -l | tr -d ' ')
+record="$(mktemp {record_dir}/inv-$(printf '%04d' "$seq")-XXXXXX)"
 for arg in "$@"; do printf '%s\0' "$arg"; done > "$record.args"
 pwd > "$record.cwd"
 env > "$record.env"
@@ -110,7 +111,8 @@ exit {exit_code}
     pub fn write_gated_stub_agent(&self) {
         let script = format!(
             r#"#!/bin/sh
-record="$(mktemp {record_dir}/inv-XXXXXXXX)"
+seq=$(ls {record_dir}/*.args 2>/dev/null | wc -l | tr -d ' ')
+record="$(mktemp {record_dir}/inv-$(printf '%04d' "$seq")-XXXXXX)"
 for arg in "$@"; do printf '%s\0' "$arg"; done > "$record.args"
 pwd > "$record.cwd"
 : > "$record.stdin"
@@ -130,7 +132,8 @@ printf 'stub agent ran\n'
     pub fn write_forking_stub_agent(&self, marker: &Path) {
         let script = format!(
             r#"#!/bin/sh
-record="$(mktemp {record_dir}/inv-XXXXXXXX)"
+seq=$(ls {record_dir}/*.args 2>/dev/null | wc -l | tr -d ' ')
+record="$(mktemp {record_dir}/inv-$(printf '%04d' "$seq")-XXXXXX)"
 for arg in "$@"; do printf '%s\0' "$arg"; done > "$record.args"
 pwd > "$record.cwd"
 env > "$record.env"
@@ -150,7 +153,8 @@ while true; do sleep 0.2; done
     pub fn write_noisy_stub_agent(&self, lines: usize) {
         let script = format!(
             r#"#!/bin/sh
-record="$(mktemp {record_dir}/inv-XXXXXXXX)"
+seq=$(ls {record_dir}/*.args 2>/dev/null | wc -l | tr -d ' ')
+record="$(mktemp {record_dir}/inv-$(printf '%04d' "$seq")-XXXXXX)"
 for arg in "$@"; do printf '%s\0' "$arg"; done > "$record.args"
 pwd > "$record.cwd"
 env > "$record.env"
@@ -248,7 +252,7 @@ done
     }
 
     /// Every stub invocation, oldest first.
-    pub fn invocations(&self) -> Vec<AgentCall> {
+    pub fn calls(&self) -> Vec<AgentCall> {
         let mut records: Vec<PathBuf> = fs::read_dir(self.record_dir())
             .unwrap()
             .filter_map(|entry| {
@@ -314,6 +318,11 @@ done
 
     pub fn state_file(&self) -> PathBuf {
         self.state_dir().join("scheduled-tasks.json")
+    }
+
+    /// The state file, or `None` while it is absent or mid-write.
+    pub fn try_read_state(&self) -> Option<serde_json::Value> {
+        serde_json::from_str(&fs::read_to_string(self.state_file()).ok()?).ok()
     }
 
     pub fn read_state(&self) -> serde_json::Value {

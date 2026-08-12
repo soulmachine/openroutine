@@ -33,10 +33,21 @@ struct Scheduled {
     project_dir: PathBuf,
     definition: TaskDefinition,
     agent: String,
-    /// The Tick itself — what the schedule promised, and what a Run records.
-    next_tick: Option<DateTime<Utc>>,
-    /// When it actually fires: the Tick plus this Task's jitter offset.
-    next_fire_at: Option<DateTime<Utc>>,
+    /// The definition's digest, recorded when a Run starts.
+    digest: String,
+    /// What this Task is waiting for, if anything.
+    pending: Option<Pending>,
+}
+
+/// A Tick that has not happened yet, and the moment it will actually fire.
+/// The two always travel together: a Tick without its jittered fire time is
+/// not a state the scheduler can be in.
+#[derive(Debug, Clone, Copy)]
+struct Pending {
+    /// What the schedule promised, and what the Run records.
+    tick: DateTime<Utc>,
+    /// The Tick plus this Task's jitter offset.
+    fire_at: DateTime<Utc>,
 }
 
 impl Scheduled {
@@ -65,6 +76,8 @@ pub struct Daemon {
     /// Resolved once at construction: a bad value must fail loudly at
     /// startup, not silently at 2am when a Tick tries to use it.
     default_timeout: crate::task::Timeout,
+    /// What was last said about each Task, so a rescan repeats nothing.
+    announced: HashMap<String, Vec<String>>,
     /// Whether this Daemon has scanned yet. Downtime is a startup question:
     /// only the first scan can tell missed Ticks from ordinary ones.
     has_scanned: bool,
@@ -93,12 +106,22 @@ impl Daemon {
             scheduled: Vec::new(),
             broken_count: 0,
             running: HashMap::new(),
+            announced: HashMap::new(),
             has_scanned: false,
         })
     }
 
     pub fn state_dir(&self) -> &PathBuf {
         &self.state_dir
+    }
+
+    /// The directories being watched for Task files.
+    pub fn project_dirs(&self) -> Vec<PathBuf> {
+        self.config
+            .projects
+            .iter()
+            .map(|project| project.path.clone())
+            .collect()
     }
 
     /// How many Tasks are currently scheduled.
@@ -121,10 +144,32 @@ impl Daemon {
         let now = self.clock.now();
         self.state = State::load(&self.state_dir)?;
 
+        let scan = discovery::scan_all(&self.config);
+        let present: std::collections::BTreeSet<String> =
+            scan.tasks.iter().map(|task| task.id.clone()).collect();
+        let borrowed: std::collections::BTreeSet<&str> =
+            present.iter().map(String::as_str).collect();
+        for id in self
+            .state
+            .prune_missing(&borrowed, &scan.reachable_projects)
+        {
+            tracing::info!(task = %id, "task file is gone; forgetting it");
+        }
+        drop(borrowed);
+
+        // What each Task is already waiting for. A rescan happens every few
+        // seconds now, so recomputing a pending Tick would quietly step over
+        // it — only a Task whose definition actually changed is re-planned.
+        let carried: HashMap<String, (String, Option<Pending>)> = self
+            .scheduled
+            .drain(..)
+            .map(|entry| (entry.id, (entry.digest, entry.pending)))
+            .collect();
+
         let mut scheduled = Vec::new();
         let mut broken = 0;
 
-        for task in discovery::scan_all(&self.config) {
+        for task in scan.tasks {
             self.state
                 .upsert(&task.id, &task.path.display().to_string());
 
@@ -132,16 +177,29 @@ impl Daemon {
                 tracing::warn!(task = %task.id, "{warning}");
             }
 
+            // Never blocked, never quiet: registering a Project trusts its
+            // committers, so an arriving or edited Task is announced.
+            if let Some(note) = task.novelty(self.state.last_run_digest(&task.id)).note() {
+                tracing::warn!(task = %task.id, "{note}");
+            }
+
             match task.health {
                 TaskHealth::Ready { definition, agent } => {
                     if !self.has_scanned {
                         self.record_downtime(&task.id, &definition, now);
                     }
-                    let next_tick = self.first_tick(&task.id, &definition, now);
+                    let unchanged = carried
+                        .get(&task.id)
+                        .filter(|(digest, _)| digest == &task.digest);
+                    let pending = match unchanged {
+                        Some((_, pending)) => *pending,
+                        None => self
+                            .first_tick(&task.id, &definition, now)
+                            .map(|tick| self.plan(&task.id, &definition, tick)),
+                    };
                     scheduled.push(Scheduled {
-                        next_tick,
-                        next_fire_at: next_tick
-                            .map(|tick| self.fire_at(&task.id, &definition, tick)),
+                        digest: task.digest,
+                        pending,
                         id: task.id,
                         project_dir: task.project_dir,
                         definition: *definition,
@@ -152,11 +210,16 @@ impl Daemon {
                     // Loud, and still listed: a typo must never look like a
                     // task that simply chose not to run.
                     broken += 1;
-                    tracing::error!(task = %task.id, "broken, will not run: {error}");
+                    let note = vec![format!("broken, will not run: {error}")];
+                    if self.announced.get(&task.id) != Some(&note) {
+                        tracing::error!(task = %task.id, "{}", note[0]);
+                        self.announced.insert(task.id.clone(), note);
+                    }
                 }
             }
         }
 
+        self.announced.retain(|id, _| present.contains(id));
         scheduled.sort_by(|a, b| a.id.cmp(&b.id));
         self.scheduled = scheduled;
         self.broken_count = broken;
@@ -285,12 +348,10 @@ impl Daemon {
             .scheduled
             .iter()
             .enumerate()
-            .filter_map(
-                |(index, entry)| match (entry.next_fire_at, entry.next_tick) {
-                    (Some(fire_at), Some(tick)) if fire_at <= now => Some((index, tick)),
-                    _ => None,
-                },
-            )
+            .filter_map(|(index, entry)| match entry.pending {
+                Some(pending) if pending.fire_at <= now => Some((index, pending.tick)),
+                _ => None,
+            })
             .collect();
 
         let mut answered_any = !due.is_empty();
@@ -370,17 +431,15 @@ impl Daemon {
             );
         }
 
-        let entry = &mut self.scheduled[index];
-        entry.next_tick = pending;
-        entry.next_fire_at = pending.map(|tick| {
-            crate::jitter::fire_at(
-                &definition.schedule,
-                &id,
-                definition.jitter,
-                tick,
-                &self.zone,
-            )
-        });
+        self.scheduled[index].pending = pending.map(|tick| self.plan(&id, &definition, tick));
+    }
+
+    /// Pairs a Tick with the moment it will actually fire.
+    fn plan(&self, id: &str, definition: &TaskDefinition, tick: DateTime<Utc>) -> Pending {
+        Pending {
+            tick,
+            fire_at: self.fire_at(id, definition, tick),
+        }
     }
 
     /// Awaits every in-flight Run.
@@ -396,6 +455,7 @@ impl Daemon {
     fn start_run(&mut self, index: usize, scheduled_for: Option<DateTime<Utc>>) -> Result<()> {
         let task = &self.scheduled[index];
         let task_id = task.id.clone();
+        let digest = task.digest.clone();
         let prompt = task.definition.prompt.clone();
         let working_dir = task.working_dir();
 
@@ -476,6 +536,8 @@ impl Daemon {
         if let Some(entry) = self.state.task_mut(&task_id) {
             entry.last_run_at = Some(started_at);
             entry.last_scheduled_for = scheduled_for;
+            // Running it is what makes it familiar.
+            entry.last_run_digest = Some(digest);
         }
         self.state.save(&self.state_dir)?;
 

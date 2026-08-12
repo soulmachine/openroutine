@@ -42,7 +42,7 @@ async fn a_due_tick_runs_the_agent_with_the_prompt_as_one_argument() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let invocations = env.invocations();
+    let invocations = env.calls();
     assert_eq!(invocations.len(), 1, "exactly one Run should have happened");
     assert_eq!(
         invocations[0].args,
@@ -66,7 +66,7 @@ async fn a_tick_that_is_not_due_yet_runs_nothing() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    assert!(env.invocations().is_empty(), "nothing was due");
+    assert!(env.calls().is_empty(), "nothing was due");
 }
 
 #[tokio::test]
@@ -185,7 +185,7 @@ async fn an_agent_without_a_prompt_placeholder_receives_it_on_stdin() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    let invocation = &env.invocations()[0];
+    let invocation = &env.calls()[0];
     assert_eq!(invocation.args, vec!["--run"], "no prompt in argv");
     assert_eq!(
         invocation.stdin.trim(),
@@ -231,7 +231,7 @@ async fn the_prompt_reaches_the_agent_with_its_shape_intact() {
     daemon.wait_for_running().await;
 
     assert_eq!(
-        env.invocations()[0].args,
+        env.calls()[0].args,
         vec!["--run", "First para.\n\n  indented line\n\nLast."],
         "blank lines and indentation survive from file to Agent"
     );
@@ -253,7 +253,7 @@ async fn fire_once(env: &TestEnv) -> Vec<String> {
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
-    env.invocations()
+    env.calls()
         .first()
         .expect("the Agent should have run")
         .args
@@ -341,7 +341,7 @@ async fn a_broken_task_is_counted_but_never_fires() {
     daemon.wait_for_running().await;
 
     assert!(
-        env.invocations().is_empty(),
+        env.calls().is_empty(),
         "a Broken Task must never reach the Agent"
     );
 }
@@ -358,7 +358,7 @@ async fn fixing_a_broken_task_lets_it_fire_on_the_next_scan() {
     let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
     clock.set(at("2026-08-11T01:00:00Z"));
     daemon.tick().await.unwrap();
-    assert!(env.invocations().is_empty(), "still broken, still silent");
+    assert!(env.calls().is_empty(), "still broken, still silent");
 
     env.write_task(
         "hourly",
@@ -371,7 +371,7 @@ async fn fixing_a_broken_task_lets_it_fire_on_the_next_scan() {
     daemon.wait_for_running().await;
 
     assert_eq!(
-        env.invocations().len(),
+        env.calls().len(),
         1,
         "a repaired Task recovers without restarting the Daemon"
     );
@@ -392,7 +392,7 @@ async fn a_task_with_an_unknown_key_still_fires() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    assert_eq!(env.invocations().len(), 1);
+    assert_eq!(env.calls().len(), 1);
 }
 
 #[tokio::test]
@@ -412,7 +412,7 @@ async fn each_tick_produces_its_own_run() {
         daemon.wait_for_running().await;
     }
 
-    assert_eq!(env.invocations().len(), 2);
+    assert_eq!(env.calls().len(), 2);
     assert_eq!(env.run_dirs("proj/hourly").len(), 2, "one run dir per Run");
     assert_eq!(
         env.read_run("proj/hourly", 1)["scheduledFor"],
@@ -439,7 +439,7 @@ async fn a_jittered_task_waits_past_its_tick_before_firing() {
     daemon.wait_for_running().await;
 
     assert!(
-        env.invocations().is_empty(),
+        env.calls().is_empty(),
         "the default jitter window holds the Run back from the exact tick"
     );
 
@@ -448,7 +448,7 @@ async fn a_jittered_task_waits_past_its_tick_before_firing() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    assert_eq!(env.invocations().len(), 1);
+    assert_eq!(env.calls().len(), 1);
 }
 
 #[tokio::test]
@@ -484,7 +484,7 @@ async fn jitter_zero_fires_exactly_on_the_tick() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    assert_eq!(env.invocations().len(), 1, "opted out of jitter, so exact");
+    assert_eq!(env.calls().len(), 1, "opted out of jitter, so exact");
 }
 
 // --- Skips --------------------------------------------------------------
@@ -508,7 +508,7 @@ async fn a_tick_arriving_mid_run_is_skipped_and_recorded_as_overlap() {
     daemon.wait_for_running().await;
 
     assert_eq!(
-        env.invocations().len(),
+        env.calls().len(),
         1,
         "a Task never runs concurrently with itself"
     );
@@ -547,7 +547,7 @@ async fn downtime_collapses_into_one_skip_carrying_the_window_and_the_count() {
     assert_eq!(skips[0]["to"], "2026-08-11T05:00:00Z");
     assert_eq!(skips[0]["count"], 4);
     assert_eq!(
-        env.invocations().len(),
+        env.calls().len(),
         2,
         "no catch-up: the missed Ticks are recorded, not run"
     );
@@ -596,7 +596,7 @@ async fn a_tick_due_at_the_reload_instant_still_fires() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    assert_eq!(env.invocations().len(), 1);
+    assert_eq!(env.calls().len(), 1);
     assert_eq!(
         env.read_run("proj/punctual", 0)["scheduledFor"],
         "2026-08-11T01:00:00Z"
@@ -619,7 +619,7 @@ async fn a_tick_already_run_is_not_repeated_after_a_reload() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    assert_eq!(env.invocations().len(), 1, "the Tick ran once, not twice");
+    assert_eq!(env.calls().len(), 1, "the Tick ran once, not twice");
 }
 
 #[tokio::test]
@@ -640,7 +640,7 @@ async fn ticks_the_scheduler_reached_late_are_recorded_not_dropped() {
     daemon.wait_for_running().await;
 
     assert_eq!(
-        env.invocations().len(),
+        env.calls().len(),
         2,
         "one Run for the Tick it reached — no catch-up storm"
     );
@@ -671,7 +671,7 @@ async fn reloading_inside_the_jitter_window_keeps_the_pending_tick() {
     daemon.tick().await.unwrap();
     daemon.wait_for_running().await;
 
-    assert_eq!(env.invocations().len(), 1, "the pending Tick still fired");
+    assert_eq!(env.calls().len(), 1, "the pending Tick still fired");
     assert_eq!(
         env.read_run("proj/spread", 0)["scheduledFor"],
         "2026-08-11T01:00:00Z"

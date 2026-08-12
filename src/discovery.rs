@@ -8,9 +8,13 @@
 
 use crate::config::{Config, ProjectConfig};
 use crate::task::TaskDefinition;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 pub const TASK_SUFFIX: &str = ".cron.md";
+/// Stands in for the digest of a file we could not read, so an unreadable
+/// Task is never mistaken for an unchanged one.
+const UNREADABLE: &str = "unreadable";
 
 #[derive(Debug, Clone)]
 pub struct ScannedTask {
@@ -19,6 +23,8 @@ pub struct ScannedTask {
     pub project: String,
     pub project_dir: PathBuf,
     pub health: TaskHealth,
+    /// A digest of the file as it is right now, for noticing changes.
+    pub digest: String,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +62,15 @@ impl ScannedTask {
         }
     }
 
+    /// How this Task stands relative to the last time it ran.
+    pub fn novelty(&self, last_run_digest: Option<&str>) -> Novelty {
+        match last_run_digest {
+            None => Novelty::NeverRun,
+            Some(seen) if seen != self.digest => Novelty::ChangedSinceLastRun,
+            Some(_) => Novelty::Familiar,
+        }
+    }
+
     pub fn warnings(&self) -> &[String] {
         self.definition()
             .map(|definition| definition.warnings.as_slice())
@@ -63,15 +78,57 @@ impl ScannedTask {
     }
 }
 
+/// Whether a Task is one anybody has exercised in its current form.
+///
+/// Registering a Project means trusting whoever can commit to it, so a Task
+/// arriving or changing is never blocked — but it is never quiet either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Novelty {
+    /// No Run has ever started for this Task.
+    NeverRun,
+    /// The definition differs from the one that last ran.
+    ChangedSinceLastRun,
+    /// Last run in exactly this form.
+    Familiar,
+}
+
+impl Novelty {
+    pub fn note(self) -> Option<&'static str> {
+        match self {
+            Novelty::NeverRun => Some("new: this task has never run"),
+            Novelty::ChangedSinceLastRun => {
+                Some("changed: the definition differs from the one that last ran")
+            }
+            Novelty::Familiar => None,
+        }
+    }
+}
+
+/// Everything one pass over the Projects found.
+#[derive(Debug, Default)]
+pub struct Scan {
+    pub tasks: Vec<ScannedTask>,
+    /// Projects whose directory was readable this pass. A Task missing from
+    /// one of these is genuinely gone; a Task under any other Project is
+    /// merely out of reach, which is not the same thing.
+    pub reachable_projects: BTreeSet<String>,
+}
+
 /// Scans every registered Project.
-pub fn scan_all(config: &Config) -> Vec<ScannedTask> {
-    let mut tasks: Vec<ScannedTask> = config
-        .projects
-        .iter()
-        .flat_map(|project| scan_project(project, config))
-        .collect();
-    tasks.sort_by(|a, b| a.id.cmp(&b.id));
-    tasks
+pub fn scan_all(config: &Config) -> Scan {
+    let mut scan = Scan::default();
+    for project in &config.projects {
+        let name = project.resolved_name();
+        // Listable, not merely present: a directory can be stat-able while
+        // its contents are unreadable, and finding no Tasks there is not the
+        // same as there being none.
+        if std::fs::read_dir(&project.path).is_ok() {
+            scan.reachable_projects.insert(name);
+        }
+        scan.tasks.extend(scan_project(project, config));
+    }
+    scan.tasks.sort_by(|a, b| a.id.cmp(&b.id));
+    scan
 }
 
 /// Scans one Project, reporting every Task file it contains.
@@ -90,9 +147,11 @@ pub fn scan_project(project: &ProjectConfig, config: &Config) -> Vec<ScannedTask
         .into_iter()
         .filter_map(|path| {
             let name = task_name(&path)?;
+            let (digest, health) = assess(&path, &project_dir, config);
             Some(ScannedTask {
                 id: format!("{project_name}/{name}"),
-                health: assess(&path, &project_dir, config),
+                health,
+                digest,
                 path,
                 project: project_name.clone(),
                 project_dir: project_dir.clone(),
@@ -101,21 +160,32 @@ pub fn scan_project(project: &ProjectConfig, config: &Config) -> Vec<ScannedTask
         .collect()
 }
 
-/// Reads and validates one Task file.
-fn assess(path: &Path, project_dir: &Path, config: &Config) -> TaskHealth {
+/// Reads and validates one Task file, returning its digest and its health
+/// from a single read — reading twice could digest one edit while assessing
+/// another, and the change would never be flagged.
+fn assess(path: &Path, project_dir: &Path, config: &Config) -> (String, TaskHealth) {
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
         Err(error) => {
-            return TaskHealth::Broken {
-                error: format!("cannot read the task file: {error}"),
-                description: None,
-            };
+            return (
+                UNREADABLE.to_string(),
+                TaskHealth::Broken {
+                    error: format!("cannot read the task file: {error}"),
+                    description: None,
+                },
+            );
         }
     };
+    let digest = crate::digest::of(source.as_bytes());
 
-    let broken = |error: String| TaskHealth::Broken {
-        error,
-        description: TaskDefinition::peek_description(&source),
+    let broken = |error: String| {
+        (
+            digest.clone(),
+            TaskHealth::Broken {
+                error,
+                description: TaskDefinition::peek_description(&source),
+            },
+        )
     };
 
     let mut definition = match TaskDefinition::parse(&source) {
@@ -173,10 +243,13 @@ fn assess(path: &Path, project_dir: &Path, config: &Config) -> TaskHealth {
         }
     }
 
-    TaskHealth::Ready {
-        definition: Box::new(definition),
-        agent,
-    }
+    (
+        digest,
+        TaskHealth::Ready {
+            definition: Box::new(definition),
+            agent,
+        },
+    )
 }
 
 /// The Task's name: the filename with the `.cron.md` suffix removed.

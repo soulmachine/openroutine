@@ -21,8 +21,15 @@ Review all open TODO and FIXME comments.
 /// Waits for a condition the daemon reaches on startup. This is process
 /// startup latency, not a scheduling assertion — schedules are asserted at
 /// the clock seam, never by waiting.
-fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+fn wait_until(what: &str, ready: impl FnMut() -> bool) {
+    wait_up_to(Duration::from_secs(10), what, ready)
+}
+
+/// Waits for something whose guaranteed path is slower than its fast path —
+/// a file change is noticed by the watcher within moments, but the promise
+/// the daemon actually makes is the periodic rescan behind it.
+fn wait_up_to(budget: Duration, what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
         if ready() {
             return;
@@ -152,4 +159,44 @@ fn nothing_is_written_outside_the_sandbox() {
         vec!["todo-digest.cron.md".to_string()],
         "the skeleton writes nothing into the Project"
     );
+}
+
+#[test]
+fn a_task_added_while_serving_is_picked_up_without_a_restart() {
+    let env = TestEnv::new();
+    env.write_config();
+
+    let mut child = Command::new(BIN)
+        .args(["serve", "--config"])
+        .arg(env.config_path())
+        .env("XDG_STATE_HOME", env.xdg_state_home())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    wait_until("the daemon to write its state file", || {
+        env.state_file().exists()
+    });
+
+    // Dropped in after the daemon is already up, as a `git pull` would.
+    env.write_task(
+        "arrived",
+        "---\ndescription: Arrived later\ncron: \"@hourly\"\nagent: stub\n---\n\nping\n",
+    );
+
+    wait_up_to(
+        Duration::from_secs(45),
+        "the new task to be noticed",
+        || {
+            env.try_read_state().is_some_and(|state| {
+                state["scheduledTasks"]
+                    .as_array()
+                    .is_some_and(|tasks| tasks.iter().any(|task| task["id"] == "proj/arrived"))
+            })
+        },
+    );
+
+    terminate(&mut child);
+    assert!(wait_for_exit(&mut child).success());
 }

@@ -65,6 +65,10 @@ pub struct TaskState {
     pub last_run_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_scheduled_for: Option<DateTime<Utc>>,
+    /// The definition, as it was when this Task last started a Run. A Task
+    /// whose file no longer matches has changed since anyone exercised it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_run_digest: Option<String>,
     /// The most recent Tick this Task answered, whether by running or by
     /// Skipping. Distinct from `last_scheduled_for`, which belongs to the
     /// last actual Run — without it, a Skipped Tick would be counted a
@@ -81,6 +85,7 @@ impl TaskState {
             enabled: true,
             last_run_at: None,
             last_scheduled_for: None,
+            last_run_digest: None,
             last_tick_at: None,
         }
     }
@@ -129,6 +134,42 @@ impl State {
 
     fn task(&self, id: &str) -> Option<&TaskState> {
         self.scheduled_tasks.iter().find(|task| task.id == id)
+    }
+
+    /// The digest recorded when this Task last started a Run.
+    pub fn last_run_digest(&self, id: &str) -> Option<&str> {
+        self.task(id)
+            .and_then(|task| task.last_run_digest.as_deref())
+    }
+
+    /// Forgets Tasks that a successful scan of their own Project did not
+    /// find.
+    ///
+    /// Only Projects that were actually readable count. A directory we could
+    /// not open — an unmounted share, a permissions blip — is not evidence
+    /// that anything was deleted, and discarding a Task's tick history on
+    /// that basis would leave the next outage unaccounted for.
+    pub fn prune_missing(
+        &mut self,
+        present: &std::collections::BTreeSet<&str>,
+        reachable_projects: &std::collections::BTreeSet<String>,
+    ) -> Vec<String> {
+        let mut pruned = Vec::new();
+        self.scheduled_tasks.retain(|task| {
+            let judged = task
+                .id
+                .split_once('/')
+                .is_some_and(|(project, _)| reachable_projects.contains(project));
+            let gone = judged && !present.contains(task.id.as_str());
+            if gone {
+                pruned.push(task.id.clone());
+            }
+            !gone
+        });
+        for id in &pruned {
+            self.recorded_skips.remove(id);
+        }
+        pruned
     }
 
     /// Marks a Tick as answered, however it was answered.

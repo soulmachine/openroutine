@@ -11,6 +11,12 @@ use std::time::Duration;
 /// How often the scheduler looks for due Ticks. Minute-resolution cron needs
 /// nothing finer; the cost of a pass is a comparison per Task.
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the Projects are rescanned regardless of what the watcher says.
+/// The watcher makes reloads prompt; this is what makes them certain.
+const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
+/// How long to let a burst of file events settle before rescanning, so a
+/// branch checkout produces one reload rather than fifty.
+const SETTLE: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -61,8 +67,18 @@ async fn main() -> Result<()> {
 /// written back.
 fn list(config_path: &std::path::Path) -> Result<()> {
     let config = Config::load(config_path)?;
-    let tasks = openroutine::discovery::scan_all(&config);
-    let report = openroutine::list::render(&tasks, SystemClock.now(), &openroutine::zone::host());
+    let scan = openroutine::discovery::scan_all(&config);
+    // State is disposable by design; a damaged one must not stop a read.
+    let state = openroutine::state::State::load(&config.state_dir()?).unwrap_or_else(|error| {
+        tracing::warn!("ignoring unreadable run state: {error:#}");
+        openroutine::state::State::default()
+    });
+    let report = openroutine::list::render(
+        &scan.tasks,
+        &state,
+        SystemClock.now(),
+        &openroutine::zone::host(),
+    );
 
     // `openroutine list | head` closes the pipe early; that's the reader's
     // choice, not an error worth a panic.
@@ -93,6 +109,11 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
 
     let mut ticker = tokio::time::interval(TICK_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut rescan = tokio::time::interval(RESCAN_INTERVAL);
+    rescan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    rescan.tick().await; // the first tick is immediate; we just scanned
+
+    let mut changes = watch_projects(daemon.project_dirs());
 
     loop {
         tokio::select! {
@@ -101,12 +122,71 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
                     tracing::error!("tick failed: {error:#}");
                 }
             }
+            _ = rescan.tick() => reload(&mut daemon).await,
+            Some(()) = changes.recv() => {
+                // Let the rest of the burst arrive, then take everything at
+                // once — and drain, so a checkout is one reload, not fifty.
+                tokio::time::sleep(SETTLE).await;
+                while changes.try_recv().is_ok() {}
+                reload(&mut daemon).await;
+            }
             signal = shutdown.recv() => {
                 tracing::info!(signal, in_flight = daemon.running_count(), "shutting down");
                 return Ok(());
             }
         }
     }
+}
+
+/// Rescans, keeping the Daemon alive if a scan fails — a bad moment on disk
+/// should not take the scheduler down with it.
+async fn reload(daemon: &mut Daemon) {
+    match daemon.reload().await {
+        Ok(()) => tracing::debug!(tasks = daemon.task_count(), "rescanned"),
+        Err(error) => tracing::error!("rescan failed: {error:#}"),
+    }
+}
+
+/// Watches every Project for changes.
+///
+/// Events only ever *hasten* a rescan: the periodic scan is the source of
+/// truth, so a missed or coalesced event costs latency, never correctness.
+fn watch_projects(dirs: Vec<PathBuf>) -> tokio::sync::mpsc::Receiver<()> {
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+
+    std::thread::spawn(move || {
+        use notify::Watcher;
+
+        let notify_sender = sender.clone();
+        let mut watcher = match notify::recommended_watcher(move |event| {
+            if matches!(event, Ok(notify::Event { .. })) {
+                // A full channel already means "rescan pending".
+                let _ = notify_sender.try_send(());
+            }
+        }) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                tracing::warn!(
+                    "file watching unavailable, falling back to periodic rescans: {error}"
+                );
+                return;
+            }
+        };
+
+        for dir in &dirs {
+            if let Err(error) = watcher.watch(dir, notify::RecursiveMode::Recursive) {
+                tracing::warn!(dir = %dir.display(), "cannot watch for changes: {error}");
+            }
+        }
+
+        // The watcher stops the moment it is dropped, so hold it until the
+        // daemon lets go of the channel.
+        while !sender.is_closed() {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    });
+
+    receiver
 }
 
 /// SIGTERM and SIGINT, held open for the daemon's whole life.
