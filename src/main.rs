@@ -92,6 +92,8 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Open the local web UI in a browser.
+    Open,
     /// Print the API token, or replace it.
     Token {
         /// Replace the token. Anything using the old one stops working.
@@ -171,6 +173,7 @@ async fn main() -> Result<()> {
         Command::Install { print } => install(&config_path, print),
         Command::Uninstall => uninstall(&config_path),
         Command::Token { rotate } => token(&config_path, rotate),
+        Command::Open => open_ui(&config_path),
         Command::Pause { task, all } => hold(&config_path, task.as_deref(), all, true).await,
         Command::Resume { task, all } => hold(&config_path, task.as_deref(), all, false).await,
     }
@@ -621,6 +624,33 @@ async fn call_api(
     }
 }
 
+/// Opens the UI, signed in.
+///
+/// The token rides in the URL once and is exchanged for a session cookie
+/// straight away, so the long-lived secret does not end up in browser
+/// storage — the same shape Jupyter uses, for the same reason.
+fn open_ui(config_path: &std::path::Path) -> Result<()> {
+    let config = Config::load(config_path)?;
+    let state_dir = config.state_dir()?;
+    if !openroutine::lock::is_held(&state_dir) {
+        anyhow::bail!("no daemon is running; start one with `openroutine serve`");
+    }
+    let token = openroutine::token::read(&state_dir)?
+        .context("the daemon has no API token yet; start it once with `openroutine serve`")?;
+    let url = format!("http://{}/?token={token}", config.bind());
+
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    match std::process::Command::new(opener).arg(&url).status() {
+        Ok(status) if status.success() => println!("Opened {}", config.bind()),
+        _ => println!("Open this once, and it will remember you:\n{url}"),
+    }
+    Ok(())
+}
+
 /// Shows the API token, or replaces it.
 fn token(config_path: &std::path::Path, rotate: bool) -> Result<()> {
     let state_dir = Config::load(config_path)?.state_dir()?;
@@ -725,13 +755,13 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
         .with_context(|| format!("listening on {bind}"))?;
     tracing::info!(%bind, "api listening");
     let server = tokio::spawn(
-        axum::serve(
-            listener,
-            openroutine::api::router(openroutine::api::Api {
+        axum::serve(listener, {
+            let api = openroutine::api::Api {
                 daemon: std::sync::Arc::clone(&daemon),
                 token: api_token,
-            }),
-        )
+            };
+            openroutine::api::router(api.clone()).merge(openroutine::ui::router(api))
+        })
         .into_future(),
     );
 

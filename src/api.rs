@@ -58,12 +58,25 @@ impl IntoResponse for Failure {
 }
 
 fn authorise(api: &Api, headers: &HeaderMap) -> Result<(), Failure> {
-    let offered = headers
+    let bearer = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .unwrap_or_default()
-        .trim();
+        .map(str::trim);
+
+    // The UI holds the same token in a session cookie: same secret, same
+    // origin, just the shape a browser can send.
+    let cookie = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|jar| {
+            jar.split(';').find_map(|pair| {
+                pair.trim()
+                    .strip_prefix(&format!("{}=", crate::ui::SESSION_COOKIE))
+            })
+        });
+
+    let offered = bearer.or(cookie).unwrap_or_default();
 
     if crate::token::matches(&api.token, offered) {
         Ok(())
@@ -79,12 +92,36 @@ fn authorise(api: &Api, headers: &HeaderMap) -> Result<(), Failure> {
 async fn list_tasks(State(api): State<Api>, headers: HeaderMap) -> Result<Json<Value>, Failure> {
     authorise(&api, &headers)?;
     let daemon = api.daemon.lock().await;
-    let tasks: Vec<Value> = daemon
+    let mut tasks: Vec<Value> = daemon
         .scheduled_tasks()
         .iter()
         .map(|task| summarise(&daemon, task))
         .collect();
-    Ok(Json(json!({ "tasks": tasks })))
+
+    // A Task that cannot run belongs in the list more than most.
+    tasks.extend(
+        daemon
+            .broken_tasks()
+            .into_iter()
+            .map(|(id, error, description)| {
+                json!({
+                    "id": id,
+                    "description": description,
+                    "error": error,
+                    "broken": true,
+                    "schedule": null,
+                    "nextTick": null,
+                    "nextFireAt": null,
+                    "running": false,
+                    "paused": false,
+                    "completed": false,
+                })
+            }),
+    );
+    tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    Ok(Json(
+        json!({ "tasks": tasks, "paused": daemon.is_paused(None) }),
+    ))
 }
 
 async fn task_detail(
@@ -120,6 +157,12 @@ fn summarise(daemon: &Daemon, task: &crate::daemon::ScheduledSummary) -> Value {
     let state = daemon.state();
     json!({
         "id": task.id,
+        "description": task.description,
+        "schedule": task.schedule,
+        "path": task.path,
+        "oneShot": task.one_shot,
+        "paused": state.is_paused(&task.id),
+        "completed": task.one_shot && task.next_fire_at.is_none(),
         // Null, never a placeholder date: a Manual or Completed Task has no
         // next fire, and saying so is not the same as saying "the year 1".
         "nextTick": task.next_tick,

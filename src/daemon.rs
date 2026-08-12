@@ -33,6 +33,7 @@ const CATCH_UP_WINDOW: chrono::Duration = chrono::Duration::days(7);
 /// these, which is how "Broken never fires" is enforced.
 struct Scheduled {
     id: String,
+    path: PathBuf,
     project_dir: PathBuf,
     definition: TaskDefinition,
     agent: String,
@@ -70,6 +71,10 @@ pub enum CancelOutcome {
 #[derive(Debug, Clone)]
 pub struct ScheduledSummary {
     pub id: String,
+    pub description: String,
+    pub schedule: String,
+    pub path: String,
+    pub one_shot: bool,
     pub next_tick: Option<DateTime<Utc>>,
     pub next_fire_at: Option<DateTime<Utc>>,
 }
@@ -106,8 +111,9 @@ pub struct Daemon {
     state_dir: PathBuf,
     state: State,
     scheduled: Vec<Scheduled>,
-    /// Broken Tasks seen by the last scan. Reported, never scheduled.
-    broken_count: usize,
+    /// Broken Tasks seen by the last scan: id, error, and whatever
+    /// description survived. Reported, never scheduled.
+    broken: Vec<(String, String, Option<String>)>,
     /// Runs started and not yet finished, by Task id — a Task appearing here
     /// is why its next Tick becomes an overlap Skip.
     running: HashMap<String, RunningRun>,
@@ -146,7 +152,7 @@ impl Daemon {
             state_dir,
             state: State::default(),
             scheduled: Vec::new(),
-            broken_count: 0,
+            broken: Vec::new(),
             running: HashMap::new(),
             announced: HashMap::new(),
             catching_up: HashMap::new(),
@@ -186,7 +192,7 @@ impl Daemon {
 
     /// How many Tasks the last scan found Broken.
     pub fn broken_count(&self) -> usize {
-        self.broken_count
+        self.broken.len()
     }
 
     /// Closes out Runs that were still going when a previous Daemon stopped.
@@ -232,7 +238,7 @@ impl Daemon {
         crate::crontab::write_all(&scan.tasks, &self.config);
 
         let mut scheduled = Vec::new();
-        let mut broken = 0;
+        let mut broken = Vec::new();
 
         for task in scan.tasks {
             self.state
@@ -276,16 +282,17 @@ impl Daemon {
                     scheduled.push(Scheduled {
                         digest: task.digest,
                         pending,
+                        path: task.path,
                         id: task.id,
                         project_dir: task.project_dir,
                         definition: *definition,
                         agent,
                     });
                 }
-                TaskHealth::Broken { .. } => {
-                    // Counted here; announced above, alongside every other
-                    // note this Task has, so one scan says each thing once.
-                    broken += 1;
+                TaskHealth::Broken { error, description } => {
+                    // Kept whole, not counted: a Task nobody can run is
+                    // exactly the one somebody needs to see.
+                    broken.push((task.id.clone(), error, description));
                 }
             }
         }
@@ -293,7 +300,8 @@ impl Daemon {
         self.announced.retain(|id, _| present.contains(id));
         scheduled.sort_by(|a, b| a.id.cmp(&b.id));
         self.scheduled = scheduled;
-        self.broken_count = broken;
+        broken.sort();
+        self.broken = broken;
         self.has_scanned = true;
 
         self.state.save(&self.state_dir)?;
@@ -677,10 +685,20 @@ impl Daemon {
             .iter()
             .map(|entry| ScheduledSummary {
                 id: entry.id.clone(),
+                description: entry.definition.description.clone(),
+                schedule: entry.definition.schedule.expression(),
+                path: entry.path.display().to_string(),
+                one_shot: entry.definition.schedule.one_shot_at().is_some(),
                 next_tick: entry.pending.map(|pending| pending.tick),
                 next_fire_at: entry.pending.map(|pending| pending.fire_at),
             })
             .collect()
+    }
+
+    /// Tasks the last scan could not use, so they can be shown rather than
+    /// merely counted.
+    pub fn broken_tasks(&self) -> Vec<(String, String, Option<String>)> {
+        self.broken.clone()
     }
 
     /// The run state as the Daemon currently holds it.

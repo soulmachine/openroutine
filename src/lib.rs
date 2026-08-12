@@ -24,4 +24,5 @@ pub mod service;
 pub mod state;
 pub mod task;
 pub mod token;
+pub mod ui;
 pub mod zone;

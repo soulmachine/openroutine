@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenRoutine</title>
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+<header>
+  <h1>OpenRoutine</h1>
+  <p class="sub">Your AI agents' crontab, as markdown. Everything here is read from files on this machine.</p>
+  <div id="banner" hidden></div>
+</header>
+
+<main>
+  <section id="tasks-view">
+    <div class="bar">
+      <h2>Tasks</h2>
+      <label class="toggle"><input type="checkbox" id="show-completed"> show completed</label>
+      <button id="pause-all" class="ghost">Pause everything</button>
+    </div>
+    <table id="tasks">
+      <thead><tr><th>Task</th><th>Description</th><th>Schedule</th><th>Next</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="empty" hidden>No tasks yet. Drop a <code>.cron.md</code> file into a registered project.</p>
+  </section>
+
+  <section id="task-view" hidden>
+    <button class="ghost" id="back">&larr; all tasks</button>
+    <h2 id="task-title"></h2>
+    <p class="path" id="task-path"></p>
+    <div class="bar">
+      <button id="run-now">Run now</button>
+      <button id="pause-task" class="ghost"></button>
+    </div>
+    <h3>Runs</h3>
+    <table id="runs">
+      <thead><tr><th>Started</th><th>Trigger</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p id="no-runs" hidden>Nothing has run yet.</p>
+    <pre id="log" hidden></pre>
+  </section>
+</main>
+
+<footer>
+  <p>Tasks are edited as files. This page never writes one.</p>
+</footer>
+
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>
