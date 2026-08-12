@@ -12,6 +12,7 @@ const NIGHTLY: &str = r#"---
 description: Nightly TODO/FIXME triage
 cron: "0 2 * * *"
 agent: stub
+jitter: 0
 ---
 
 Review all open TODO and FIXME comments.
@@ -220,7 +221,7 @@ async fn the_prompt_reaches_the_agent_with_its_shape_intact() {
     let env = TestEnv::new();
     env.write_task(
         "shaped",
-        "---\ndescription: Multi-paragraph prompt\ncron: \"@hourly\"\nagent: stub\n---\n\nFirst para.\n\n  indented line\n\nLast.\n",
+        "---\ndescription: Multi-paragraph prompt\ncron: \"@hourly\"\nagent: stub\njitter: 0\n---\n\nFirst para.\n\n  indented line\n\nLast.\n",
     );
     env.write_config();
 
@@ -240,7 +241,9 @@ async fn the_prompt_reaches_the_agent_with_its_shape_intact() {
 fn hourly_task(env: &TestEnv, name: &str, prompt: &str) {
     env.write_task(
         name,
-        &format!("---\ndescription: {name}\ncron: \"@hourly\"\nagent: stub\n---\n\n{prompt}\n"),
+        &format!(
+            "---\ndescription: {name}\ncron: \"@hourly\"\nagent: stub\njitter: 0\n---\n\n{prompt}\n"
+        ),
     );
 }
 
@@ -359,7 +362,7 @@ async fn fixing_a_broken_task_lets_it_fire_on_the_next_scan() {
 
     env.write_task(
         "hourly",
-        "---\ndescription: Fixed\ncron: \"@hourly\"\nagent: stub\n---\n\nping\n",
+        "---\ndescription: Fixed\ncron: \"@hourly\"\nagent: stub\njitter: 0\n---\n\nping\n",
     );
     daemon.reload().await.unwrap();
 
@@ -379,7 +382,7 @@ async fn a_task_with_an_unknown_key_still_fires() {
     let env = TestEnv::new();
     env.write_task(
         "odd",
-        "---\ndescription: Key from the future\ncron: \"@hourly\"\nagent: stub\nretries: 3\n---\n\nping\n",
+        "---\ndescription: Key from the future\ncron: \"@hourly\"\nagent: stub\njitter: 0\nretries: 3\n---\n\nping\n",
     );
     env.write_config();
 
@@ -397,7 +400,7 @@ async fn each_tick_produces_its_own_run() {
     let env = TestEnv::new();
     env.write_task(
         "hourly",
-        "---\ndescription: d\ncron: \"@hourly\"\nagent: stub\n---\n\nping\n",
+        "---\ndescription: d\ncron: \"@hourly\"\nagent: stub\njitter: 0\n---\n\nping\n",
     );
     env.write_config();
 
@@ -405,8 +408,9 @@ async fn each_tick_produces_its_own_run() {
     for hour in ["2026-08-11T01:00:00Z", "2026-08-11T02:00:00Z"] {
         clock.set(at(hour));
         daemon.tick().await.unwrap();
+        // Each Run finishes before the next Tick, so neither overlaps.
+        daemon.wait_for_running().await;
     }
-    daemon.wait_for_running().await;
 
     assert_eq!(env.invocations().len(), 2);
     assert_eq!(env.run_dirs("proj/hourly").len(), 2, "one run dir per Run");
@@ -414,4 +418,296 @@ async fn each_tick_produces_its_own_run() {
         env.read_run("proj/hourly", 1)["scheduledFor"],
         "2026-08-11T02:00:00Z"
     );
+}
+
+// --- Jitter -------------------------------------------------------------
+
+const HOURLY_EXACT: &str = "---\ndescription: Exactly on the tick\ncron: \"@hourly\"\nagent: stub\njitter: 0\n---\n\nping\n";
+
+const HOURLY_JITTERED: &str =
+    "---\ndescription: Spread out\ncron: \"@hourly\"\nagent: stub\n---\n\nping\n";
+
+#[tokio::test]
+async fn a_jittered_task_waits_past_its_tick_before_firing() {
+    let env = TestEnv::new();
+    env.write_task("spread", HOURLY_JITTERED);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert!(
+        env.invocations().is_empty(),
+        "the default jitter window holds the Run back from the exact tick"
+    );
+
+    // Past the widest the window can be, it has certainly fired.
+    clock.set(at("2026-08-11T01:05:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(env.invocations().len(), 1);
+}
+
+#[tokio::test]
+async fn the_run_records_the_tick_it_answers_and_the_moment_it_actually_started() {
+    let env = TestEnv::new();
+    env.write_task("spread", HOURLY_JITTERED);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:05:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    let run = env.read_run("proj/spread", 0);
+    assert_eq!(
+        run["scheduledFor"], "2026-08-11T01:00:00Z",
+        "the Tick is the schedule's instant, unjittered"
+    );
+    assert_eq!(
+        run["startedAt"], "2026-08-11T01:05:00Z",
+        "the start is when it really began"
+    );
+}
+
+#[tokio::test]
+async fn jitter_zero_fires_exactly_on_the_tick() {
+    let env = TestEnv::new();
+    env.write_task("punctual", HOURLY_EXACT);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(env.invocations().len(), 1, "opted out of jitter, so exact");
+}
+
+// --- Skips --------------------------------------------------------------
+
+#[tokio::test]
+async fn a_tick_arriving_mid_run_is_skipped_and_recorded_as_overlap() {
+    let env = TestEnv::new();
+    env.write_gated_stub_agent();
+    env.write_task("slow", HOURLY_EXACT);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+
+    // Still running when the next Tick comes due.
+    clock.set(at("2026-08-11T02:00:00Z"));
+    daemon.tick().await.unwrap();
+
+    env.open_gate();
+    daemon.wait_for_running().await;
+
+    assert_eq!(
+        env.invocations().len(),
+        1,
+        "a Task never runs concurrently with itself"
+    );
+    let skips = env.read_state()["recordedSkips"]["proj/slow"].clone();
+    assert_eq!(skips[0]["reason"], "overlap");
+    assert_eq!(skips[0]["scheduledFor"], "2026-08-11T02:00:00Z");
+}
+
+#[tokio::test]
+async fn downtime_collapses_into_one_skip_carrying_the_window_and_the_count() {
+    let env = TestEnv::new();
+    env.write_task("hourly", HOURLY_EXACT);
+    env.write_config();
+
+    // Runs once, then the Daemon goes away.
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+    drop(daemon);
+
+    // A fresh Daemon starts hours later over the same state.
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T05:30:00Z").await;
+    clock.set(at("2026-08-11T06:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    let skips = env.read_state()["recordedSkips"]["proj/hourly"].clone();
+    assert_eq!(
+        skips.as_array().map(Vec::len),
+        Some(1),
+        "one honest entry for the outage, not one per missed Tick: {skips}"
+    );
+    assert_eq!(skips[0]["reason"], "daemon-down");
+    assert_eq!(skips[0]["from"], "2026-08-11T02:00:00Z");
+    assert_eq!(skips[0]["to"], "2026-08-11T05:00:00Z");
+    assert_eq!(skips[0]["count"], 4);
+    assert_eq!(
+        env.invocations().len(),
+        2,
+        "no catch-up: the missed Ticks are recorded, not run"
+    );
+}
+
+#[tokio::test]
+async fn skip_records_are_capped_and_the_newest_survive() {
+    let env = TestEnv::new();
+    env.write_gated_stub_agent();
+    env.write_task(
+        "minutely",
+        "---\ndescription: Every minute\ncron: \"* * * * *\"\nagent: stub\njitter: 0\n---\n\nping\n",
+    );
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:00:30Z").await;
+    // The first Tick starts a Run that never finishes; every later Tick
+    // overlaps it.
+    for minute in 1..=59 {
+        clock.set(at(&format!("2026-08-11T00:{minute:02}:00Z")));
+        daemon.tick().await.unwrap();
+    }
+    env.open_gate();
+    daemon.wait_for_running().await;
+
+    let state = env.read_state();
+    let skips = state["recordedSkips"]["proj/minutely"].as_array().unwrap();
+    assert_eq!(skips.len(), 50, "capped");
+    assert_eq!(
+        skips.last().unwrap()["scheduledFor"],
+        "2026-08-11T00:59:00Z",
+        "the newest Skip is kept"
+    );
+}
+
+// --- Boundary -----------------------------------------------------------
+
+#[tokio::test]
+async fn a_tick_due_at_the_reload_instant_still_fires() {
+    let env = TestEnv::new();
+    env.write_task("punctual", HOURLY_EXACT);
+    env.write_config();
+
+    // Loading exactly as the Tick comes due must not step over it.
+    let (mut daemon, _clock) = daemon_at(&env, "2026-08-11T01:00:00Z").await;
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(env.invocations().len(), 1);
+    assert_eq!(
+        env.read_run("proj/punctual", 0)["scheduledFor"],
+        "2026-08-11T01:00:00Z"
+    );
+}
+
+#[tokio::test]
+async fn a_tick_already_run_is_not_repeated_after_a_reload() {
+    let env = TestEnv::new();
+    env.write_task("punctual", HOURLY_EXACT);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    // A reload at the same instant sees the Tick already answered.
+    daemon.reload().await.unwrap();
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(env.invocations().len(), 1, "the Tick ran once, not twice");
+}
+
+#[tokio::test]
+async fn ticks_the_scheduler_reached_late_are_recorded_not_dropped() {
+    let env = TestEnv::new();
+    env.write_task("hourly", HOURLY_EXACT);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    // The Daemon is alive but doesn't get a pass in for hours — a suspended
+    // laptop, or a scheduler pass that ran long.
+    clock.set(at("2026-08-11T05:30:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(
+        env.invocations().len(),
+        2,
+        "one Run for the Tick it reached — no catch-up storm"
+    );
+    let skips = env.read_state()["recordedSkips"]["proj/hourly"].clone();
+    assert_eq!(skips[0]["reason"], "missed");
+    assert_eq!(skips[0]["from"], "2026-08-11T03:00:00Z");
+    assert_eq!(skips[0]["to"], "2026-08-11T05:00:00Z");
+    assert_eq!(
+        skips[0]["count"], 3,
+        "every Tick is accounted for: one ran, the rest recorded — {skips}"
+    );
+}
+
+#[tokio::test]
+async fn reloading_inside_the_jitter_window_keeps_the_pending_tick() {
+    let env = TestEnv::new();
+    env.write_task("spread", HOURLY_JITTERED);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+
+    // The Tick has passed but its jittered fire time has not arrived, and
+    // something reloads — an edit, a rescan. The Tick must survive.
+    clock.set(at("2026-08-11T01:00:01Z"));
+    daemon.reload().await.unwrap();
+
+    clock.set(at("2026-08-11T01:05:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(env.invocations().len(), 1, "the pending Tick still fired");
+    assert_eq!(
+        env.read_run("proj/spread", 0)["scheduledFor"],
+        "2026-08-11T01:00:00Z"
+    );
+}
+
+#[tokio::test]
+async fn a_tick_answered_by_a_skip_is_not_counted_again_as_downtime() {
+    let env = TestEnv::new();
+    env.write_gated_stub_agent();
+    env.write_task("slow", HOURLY_EXACT);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    clock.set(at("2026-08-11T02:00:00Z"));
+    daemon.tick().await.unwrap(); // overlap Skip for 02:00
+    env.open_gate();
+    daemon.wait_for_running().await;
+    drop(daemon);
+
+    // A fresh Daemon must not count 02:00 a second time as downtime.
+    let (mut daemon, _clock) = daemon_at(&env, "2026-08-11T03:30:00Z").await;
+    daemon.tick().await.unwrap();
+
+    let state = env.read_state();
+    let skips = state["recordedSkips"]["proj/slow"].as_array().unwrap();
+    let downtime: Vec<_> = skips
+        .iter()
+        .filter(|skip| skip["reason"] == "daemon-down")
+        .collect();
+    assert_eq!(downtime.len(), 1, "one outage entry: {skips:?}");
+    assert_eq!(
+        downtime[0]["from"], "2026-08-11T03:00:00Z",
+        "downtime starts after the Tick the overlap Skip already answered"
+    );
+    assert_eq!(downtime[0]["count"], 1);
 }

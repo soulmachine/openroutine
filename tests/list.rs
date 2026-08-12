@@ -29,7 +29,7 @@ fn a_ready_task_shows_its_id_description_schedule_agent_and_next_fire() {
     // The next Tick of `0 2 * * *` is 02:00 in the host's own zone.
     assert!(
         out.contains("T02:00:00"),
-        "expected a next fire time at 02:00 local, got:\n{out}"
+        "expected the next Tick at 02:00 local, got:\n{out}"
     );
 }
 

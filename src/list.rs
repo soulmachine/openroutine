@@ -13,7 +13,7 @@ const HEADINGS: [&str; COLUMNS] = [
     "DESCRIPTION",
     "SCHEDULE",
     "AGENT",
-    "NEXT FIRE",
+    "NEXT TICK",
 ];
 
 /// One rendered row, before column widths are known.
@@ -72,7 +72,7 @@ where
         TaskHealth::Ready { definition, agent } => {
             let next_fire = definition
                 .schedule
-                .next_fire_after(now, zone)
+                .next_tick_after(now, zone)
                 .map(|when| {
                     when.with_timezone(zone)
                         .to_rfc3339_opts(SecondsFormat::Secs, false)

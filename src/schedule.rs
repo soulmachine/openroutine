@@ -45,15 +45,45 @@ impl Schedule {
         &self.expression
     }
 
-    /// The first tick strictly after `after`, evaluated in `zone`.
-    pub fn next_fire_after<Tz: TimeZone>(
+    /// The first Tick strictly after `after`, evaluated in `zone`.
+    pub fn next_tick_after<Tz: TimeZone>(
         &self,
         after: DateTime<Utc>,
         zone: &Tz,
     ) -> Option<DateTime<Utc>> {
-        let local = after.with_timezone(zone);
+        self.find(after, zone, false)
+    }
+
+    /// The first Tick at or after `at`. Used when reloading, so a Tick due at
+    /// exactly that instant is not silently stepped over.
+    pub fn next_tick_at_or_after<Tz: TimeZone>(
+        &self,
+        at: DateTime<Utc>,
+        zone: &Tz,
+    ) -> Option<DateTime<Utc>> {
+        self.find(at, zone, true)
+    }
+
+    /// The gap from `tick` to the Tick after it — the spacing jitter is
+    /// allowed to nudge within.
+    pub fn interval_after<Tz: TimeZone>(
+        &self,
+        tick: DateTime<Utc>,
+        zone: &Tz,
+    ) -> Option<chrono::Duration> {
+        self.next_tick_after(tick, zone)
+            .map(|following| following - tick)
+    }
+
+    fn find<Tz: TimeZone>(
+        &self,
+        from: DateTime<Utc>,
+        zone: &Tz,
+        inclusive: bool,
+    ) -> Option<DateTime<Utc>> {
+        let local = from.with_timezone(zone);
         self.cron
-            .find_next_occurrence(&local, false)
+            .find_next_occurrence(&local, inclusive)
             .ok()
             .map(|next| next.with_timezone(&Utc))
     }

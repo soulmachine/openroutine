@@ -9,24 +9,33 @@ use crate::config::Config;
 use crate::discovery::{self, TaskHealth};
 use crate::run::{self, RunRecord, RunStatus, Trigger};
 use crate::runner;
-use crate::state::State;
+use crate::state::{Skip, State};
 use crate::task::TaskDefinition;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 
-/// A Ready Task plus the instant it next comes due. Broken Tasks never get
-/// one of these, which is how "Broken never fires" is enforced.
+/// How many missed Ticks are counted before giving up on an exact figure.
+/// A minutely Task down for a month is ~43k; the bound keeps a pathological
+/// outage from stalling startup.
+const MAX_COUNTED_MISSES: usize = 50_000;
+
+/// A Ready Task plus when it next comes due. Broken Tasks never get one of
+/// these, which is how "Broken never fires" is enforced.
 struct Scheduled {
     id: String,
     project_dir: PathBuf,
     definition: TaskDefinition,
     agent: String,
+    /// The Tick itself — what the schedule promised, and what a Run records.
+    next_tick: Option<DateTime<Utc>>,
+    /// When it actually fires: the Tick plus this Task's jitter offset.
     next_fire_at: Option<DateTime<Utc>>,
 }
 
@@ -39,8 +48,12 @@ pub struct Daemon {
     scheduled: Vec<Scheduled>,
     /// Broken Tasks seen by the last scan. Reported, never scheduled.
     broken_count: usize,
-    /// Runs started and not yet finished.
-    running: Vec<JoinHandle<()>>,
+    /// Runs started and not yet finished, by Task id — a Task appearing here
+    /// is why its next Tick becomes an overlap Skip.
+    running: HashMap<String, JoinHandle<()>>,
+    /// Whether this Daemon has scanned yet. Downtime is a startup question:
+    /// only the first scan can tell missed Ticks from ordinary ones.
+    has_scanned: bool,
 }
 
 impl Daemon {
@@ -63,7 +76,8 @@ impl Daemon {
             state: State::default(),
             scheduled: Vec::new(),
             broken_count: 0,
-            running: Vec::new(),
+            running: HashMap::new(),
+            has_scanned: false,
         })
     }
 
@@ -104,13 +118,18 @@ impl Daemon {
 
             match task.health {
                 TaskHealth::Ready { definition, agent } => {
-                    let next_fire_at = definition.schedule.next_fire_after(now, &self.zone);
+                    if !self.has_scanned {
+                        self.record_downtime(&task.id, &definition, now);
+                    }
+                    let next_tick = self.first_tick(&task.id, &definition, now);
                     scheduled.push(Scheduled {
+                        next_tick,
+                        next_fire_at: next_tick
+                            .map(|tick| self.fire_at(&task.id, &definition, tick)),
                         id: task.id,
                         project_dir: task.project_dir,
                         definition: *definition,
                         agent,
-                        next_fire_at,
                     });
                 }
                 TaskHealth::Broken { error, .. } => {
@@ -125,9 +144,107 @@ impl Daemon {
         scheduled.sort_by(|a, b| a.id.cmp(&b.id));
         self.scheduled = scheduled;
         self.broken_count = broken;
+        self.has_scanned = true;
 
         self.state.save(&self.state_dir)?;
         Ok(())
+    }
+
+    /// The Tick a freshly loaded Task is waiting for.
+    ///
+    /// Two traps here. A Tick due at exactly this instant must not be stepped
+    /// over, and a Tick whose jittered fire time hasn't arrived yet is still
+    /// pending even though the Tick itself is in the past — reloading (which
+    /// hot reload makes frequent) must not drop it.
+    fn first_tick(
+        &self,
+        id: &str,
+        definition: &TaskDefinition,
+        now: DateTime<Utc>,
+    ) -> Option<DateTime<Utc>> {
+        let lookback = definition
+            .jitter
+            .unwrap_or(crate::jitter::DEFAULT_WINDOW)
+            .max(crate::jitter::DEFAULT_WINDOW);
+        let answered = self.state.last_tick_at(id);
+
+        let mut candidate = definition
+            .schedule
+            .next_tick_at_or_after(now - lookback, &self.zone)?;
+
+        loop {
+            let unanswered = answered < Some(candidate);
+            if candidate >= now {
+                return if unanswered {
+                    Some(candidate)
+                } else {
+                    definition.schedule.next_tick_after(candidate, &self.zone)
+                };
+            }
+            // Behind us, but its jittered fire time may still be ahead.
+            if unanswered && self.fire_at(id, definition, candidate) >= now {
+                return Some(candidate);
+            }
+            candidate = definition.schedule.next_tick_after(candidate, &self.zone)?;
+        }
+    }
+
+    /// When a Tick actually fires, once this Task's jitter is applied.
+    fn fire_at(&self, id: &str, definition: &TaskDefinition, tick: DateTime<Utc>) -> DateTime<Utc> {
+        crate::jitter::fire_at(
+            &definition.schedule,
+            id,
+            definition.jitter,
+            tick,
+            &self.zone,
+        )
+    }
+
+    /// Records the Ticks that passed while the Daemon wasn't running as one
+    /// collapsed Skip. A month of missed minutely Ticks is one honest entry,
+    /// not forty thousand rows nobody reads.
+    fn record_downtime(&mut self, id: &str, definition: &TaskDefinition, now: DateTime<Utc>) {
+        let Some(last) = self
+            .state
+            .last_tick_at(id)
+            .or_else(|| self.state.last_scheduled_for(id))
+        else {
+            return;
+        };
+
+        let mut missed: Option<(DateTime<Utc>, DateTime<Utc>, usize)> = None;
+        let mut truncated = false;
+        let mut cursor = last;
+        while let Some(tick) = definition.schedule.next_tick_after(cursor, &self.zone) {
+            if tick >= now {
+                break;
+            }
+            missed = Some(match missed {
+                None => (tick, tick, 1),
+                Some((from, _, count)) => (from, tick, count + 1),
+            });
+            cursor = tick;
+            if missed.is_some_and(|(_, _, count)| count >= MAX_COUNTED_MISSES) {
+                tracing::warn!(task = %id, "stopped counting missed ticks at {MAX_COUNTED_MISSES}");
+                truncated = true;
+                break;
+            }
+        }
+
+        if let Some((from, to, count)) = missed {
+            tracing::warn!(task = %id, %from, %to, count, "ticks missed while the daemon was down");
+            self.state.note_tick(id, to);
+            self.state.record_skip(
+                id,
+                Skip::DaemonDown {
+                    from,
+                    to,
+                    count,
+                    recorded_at: now,
+                    truncated,
+                },
+            );
+        }
     }
 
     /// Starts every Task whose Tick has come due and returns immediately. A
@@ -135,38 +252,113 @@ impl Daemon {
     /// no catch-up.
     pub async fn tick(&mut self) -> Result<()> {
         let now = self.clock.now();
+        self.running.retain(|_, handle| !handle.is_finished());
 
         let due: Vec<(usize, DateTime<Utc>)> = self
             .scheduled
             .iter()
             .enumerate()
-            .filter_map(|(index, entry)| match entry.next_fire_at {
-                Some(next) if next <= now => Some((index, next)),
-                _ => None,
-            })
+            .filter_map(
+                |(index, entry)| match (entry.next_fire_at, entry.next_tick) {
+                    (Some(fire_at), Some(tick)) if fire_at <= now => Some((index, tick)),
+                    _ => None,
+                },
+            )
             .collect();
 
-        for (index, scheduled_for) in due {
-            self.scheduled[index].next_fire_at = self.scheduled[index]
-                .definition
-                .schedule
-                .next_fire_after(now, &self.zone);
+        let mut answered_any = !due.is_empty();
 
-            if let Err(error) = self.start_run(index, Some(scheduled_for)) {
-                tracing::error!(
-                    task = %self.scheduled[index].id,
-                    "run failed to start: {error:#}"
+        for (index, tick) in due {
+            let id = self.scheduled[index].id.clone();
+            self.advance(index, tick, now);
+            self.state.note_tick(&id, tick);
+
+            // A Task never runs concurrently with itself; the Tick it would
+            // have answered is recorded rather than dropped.
+            if self.running.contains_key(&id) {
+                tracing::warn!(task = %id, scheduled_for = %tick, "skipped: previous run still going");
+                self.state.record_skip(
+                    &id,
+                    Skip::Overlap {
+                        scheduled_for: tick,
+                        recorded_at: now,
+                    },
                 );
+                continue;
+            }
+
+            match self.start_run(index, Some(tick)) {
+                // `start_run` saves state itself once the Agent is away.
+                Ok(()) => answered_any = false,
+                Err(error) => tracing::error!(task = %id, "run failed to start: {error:#}"),
             }
         }
 
-        self.running.retain(|handle| !handle.is_finished());
+        if answered_any {
+            self.state.save(&self.state_dir)?;
+        }
         Ok(())
+    }
+
+    /// Moves a Task past the Tick it just answered.
+    ///
+    /// Walks forward one Tick at a time rather than jumping to `now`: if the
+    /// scheduler fell behind — a suspended laptop, a pass that ran long — the
+    /// Ticks in between are recorded rather than vanishing. Every Tick becomes
+    /// exactly one Run or one Skip, and that has to hold when we are late.
+    fn advance(&mut self, index: usize, answered: DateTime<Utc>, now: DateTime<Utc>) {
+        let (id, definition) = {
+            let entry = &self.scheduled[index];
+            (entry.id.clone(), entry.definition.clone())
+        };
+
+        let mut cursor = answered;
+        let mut overdue: Option<(DateTime<Utc>, DateTime<Utc>, usize)> = None;
+
+        let pending = loop {
+            let Some(tick) = definition.schedule.next_tick_after(cursor, &self.zone) else {
+                break None;
+            };
+            if self.fire_at(&id, &definition, tick) > now {
+                break Some(tick);
+            }
+            overdue = Some(match overdue {
+                None => (tick, tick, 1),
+                Some((from, _, count)) => (from, tick, count + 1),
+            });
+            cursor = tick;
+        };
+
+        if let Some((from, to, count)) = overdue {
+            tracing::warn!(task = %id, %from, %to, count, "ticks passed before the scheduler reached them");
+            self.state.note_tick(&id, to);
+            self.state.record_skip(
+                &id,
+                Skip::Missed {
+                    from,
+                    to,
+                    count,
+                    recorded_at: now,
+                },
+            );
+        }
+
+        let entry = &mut self.scheduled[index];
+        entry.next_tick = pending;
+        entry.next_fire_at = pending.map(|tick| {
+            crate::jitter::fire_at(
+                &definition.schedule,
+                &id,
+                definition.jitter,
+                tick,
+                &self.zone,
+            )
+        });
     }
 
     /// Awaits every in-flight Run.
     pub async fn wait_for_running(&mut self) {
-        for handle in std::mem::take(&mut self.running) {
+        for (_, handle) in std::mem::take(&mut self.running) {
             let _ = handle.await;
         }
     }
@@ -243,7 +435,7 @@ impl Daemon {
         let clock = Arc::clone(&self.clock);
         let piped_prompt = command.prompt_on_stdin.then_some(prompt);
 
-        self.running.push(tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             if let Some(prompt) = piped_prompt
                 && let Some(mut stdin) = child.stdin.take()
                 && let Err(error) = stdin.write_all(prompt.as_bytes()).await
@@ -270,7 +462,8 @@ impl Daemon {
             if let Err(error) = record.write_to(&run_dir) {
                 tracing::error!(task = %record.task_id, "recording run: {error:#}");
             }
-        }));
+        });
+        self.running.insert(task_id, handle);
 
         Ok(())
     }

@@ -9,6 +9,7 @@ pub mod clock;
 pub mod config;
 pub mod daemon;
 pub mod discovery;
+pub mod jitter;
 pub mod list;
 pub mod run;
 pub mod runner;

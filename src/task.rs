@@ -29,7 +29,6 @@ const NOT_YET_HONOURED: &[&str] = &[
     "cwd",
     "disabled",
     "env",
-    "jitter",
     "model",
     "on_failure",
     "permission_mode",
@@ -43,6 +42,8 @@ struct Frontmatter {
     description: Option<String>,
     cron: Option<String>,
     agent: Option<String>,
+    /// Accepts `2m`, `30s`, or a bare `0`, so it reads naturally either way.
+    jitter: Option<serde_yaml_ng::Value>,
     /// Anything this build doesn't act on. Kept rather than dropped so it can
     /// be reported: a key that silently does nothing is the worst outcome.
     #[serde(flatten)]
@@ -54,6 +55,8 @@ pub struct TaskDefinition {
     pub description: String,
     pub schedule: Schedule,
     pub agent: Option<String>,
+    /// How far this Task's fire time may be nudged. `None` takes the default.
+    pub jitter: Option<chrono::Duration>,
     pub prompt: String,
     /// Non-fatal complaints about the definition. A warned Task still runs.
     pub warnings: Vec<String>,
@@ -87,10 +90,19 @@ impl TaskDefinition {
             })
             .collect();
 
+        let jitter =
+            match parsed.jitter {
+                Some(value) => Some(parse_duration_value(&value).map_err(|reason| {
+                    TaskError::InvalidFrontmatter(format!("`jitter`: {reason}"))
+                })?),
+                None => None,
+            };
+
         Ok(Self {
             description,
             schedule: Schedule::parse(&cron)?,
             agent: parsed.agent,
+            jitter,
             prompt: body.trim().to_string(),
             warnings,
         })
@@ -132,4 +144,52 @@ fn split_frontmatter(source: &str) -> Result<(&str, &str), TaskError> {
     }
 
     Err(TaskError::UnterminatedFrontmatter)
+}
+
+/// A duration as frontmatter writes it: `30s`, `5m`, `2h`, `1d`, or a bare
+/// number of seconds (so `jitter: 0` reads naturally).
+fn parse_duration_value(value: &serde_yaml_ng::Value) -> Result<chrono::Duration, String> {
+    if let Some(seconds) = value.as_i64() {
+        return non_negative(
+            chrono::Duration::try_seconds(seconds)
+                .ok_or_else(|| format!("{seconds} seconds is out of range"))?,
+        );
+    }
+    let text = value
+        .as_str()
+        .ok_or_else(|| "expected a duration like `5m`, or a number of seconds".to_string())?;
+    parse_duration(text)
+}
+
+pub fn parse_duration(text: &str) -> Result<chrono::Duration, String> {
+    let text = text.trim();
+    let (digits, unit) = text.split_at(
+        text.find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len()),
+    );
+
+    let amount: i64 = digits
+        .parse()
+        .map_err(|_| format!("{text:?} is not a duration like `5m`"))?;
+
+    let duration = match unit.trim() {
+        "" | "s" => chrono::Duration::seconds(amount),
+        "m" => chrono::Duration::minutes(amount),
+        "h" => chrono::Duration::hours(amount),
+        "d" => chrono::Duration::days(amount),
+        other => {
+            return Err(format!(
+                "unknown duration unit {other:?}; use s, m, h, or d"
+            ));
+        }
+    };
+    non_negative(duration)
+}
+
+fn non_negative(duration: chrono::Duration) -> Result<chrono::Duration, String> {
+    if duration < chrono::Duration::zero() {
+        Err("must not be negative".to_string())
+    } else {
+        Ok(duration)
+    }
 }
