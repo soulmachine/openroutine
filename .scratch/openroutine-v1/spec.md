@@ -1,6 +1,6 @@
 # OpenRoutine v1 — full product spec
 
-Status: implemented and released as **1.0.0**. Amended 2026-08-12 for the file-registration redesign that 1.0 ships: directory registration, scanning, and hot reload replaced by explicit per-file registration and explicit Reload; identity is an Id derived from the written `name`; a Run is bounded by silence rather than by total runtime. See `docs/adr/0002` and DECISIONS Q75–Q92. Withdrawn stories are kept in place so the numbering stays stable.
+Status: implemented; current release **1.0.1**. Amended 2026-08-12 for the file-registration redesign that 1.0 ships: directory registration, scanning, and hot reload replaced by explicit per-file registration and explicit Reload; identity is an Id derived from the written `name`; a Run is bounded by silence rather than by total runtime. See `docs/adr/0002` and DECISIONS Q75–Q96. Withdrawn stories are kept in place so the numbering stays stable.
 
 ## Problem Statement
 
@@ -141,7 +141,7 @@ One binary, one process, zero databases. The daemon is the scheduler, the API, a
 40. As a user who accepts the risk, I want a config bind override that keeps the token mandatory and is loudly discouraged in docs, so that a tailnet setup is possible without OpenRoutine pretending it's safe.
 41. As a user, I want API responses to distinguish null (unknown) from empty (none found), and `nextFireAt` to be genuinely null for Completed Tasks, so that clients never parse sentinel values.
 42. As a user, I want a local web UI — every task with schedule and next fire, run history with full logs, run-now/pause/resume/cancel, the global pause toggle — with no account anywhere, so that I get the vendors' dashboard experience against my own machine.
-43. As a UI user, I want `openroutine dashboard` to log me in via a one-time tokenized URL that sets a session cookie, so that auth is one command and the long-lived token never sits in browser storage. *(Renamed from `open` after 1.0.0, DECISIONS Q94; `open` stays as an alias.)*
+43. As a UI user, I want `openroutine dashboard` to log me in via a one-time tokenized URL that sets a session cookie, so that auth is one command and the long-lived token never sits in browser storage. *(Renamed from `open` in 1.0.1; the old name was removed outright rather than aliased — DECISIONS Q94, superseded by Q95.)*
 44. As a UI user, I want One-shot Tasks shown with a countdown or absolute time — never presented as recurring — and Completed ones hidden behind a toggle, so that the list reflects reality.
 45. As a user, I want the UI to be read-and-operate only, permanently, showing the file path to edit instead of an editor, so that files remain the only authoring surface and `git diff` stays the whole truth.
 46. As a task author, I want editing a fired One-shot's definition to re-arm it — a new `at:` moment, or any content change for the ASAP kind — with completion recorded atomically in state as part of firing, so that a one-shot fires exactly once per moment, never zero times, never twice.
