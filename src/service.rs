@@ -20,12 +20,24 @@ pub struct ServiceDefinition {
 
 /// Builds the definition for this platform.
 pub fn definition(binary: &Path, config: &Path, home: &Path) -> Result<ServiceDefinition> {
+    // These become lines in a plist or a unit file. A newline in any of them
+    // would add directives of its own, so they are refused rather than
+    // escaped — a path or shell containing one is a mistake, not a use case.
+    for (what, value) in [
+        ("the binary path", binary.display().to_string()),
+        ("the config path", config.display().to_string()),
+    ] {
+        if value.contains(['\n', '\r']) {
+            anyhow::bail!("{what} contains a line break; refusing to write a service definition");
+        }
+    }
+
     // The profile the Daemon will hand to Agents comes from this shell, and
     // a service manager starts processes without one — so it is written into
     // the definition rather than left to chance.
     let shell = std::env::var("SHELL")
         .ok()
-        .filter(|shell| !shell.is_empty())
+        .filter(|shell| !shell.is_empty() && !shell.contains(['\n', '\r']))
         .unwrap_or_else(|| "/bin/sh".to_string());
 
     #[cfg(target_os = "macos")]
@@ -41,6 +53,15 @@ pub fn definition(binary: &Path, config: &Path, home: &Path) -> Result<ServiceDe
         let _ = (binary, config, home, shell);
         anyhow::bail!("openroutine installs a service on macOS and Linux only")
     }
+}
+
+/// Escapes a value going into plist XML.
+#[cfg(target_os = "macos")]
+fn xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(target_os = "macos")]
@@ -72,8 +93,9 @@ fn launch_agent(binary: &Path, config: &Path, home: &Path, shell: &str) -> Servi
 </dict>
 </plist>
 "#,
-        binary = binary.display(),
-        config = config.display(),
+        binary = xml(&binary.display().to_string()),
+        config = xml(&config.display().to_string()),
+        shell = xml(shell),
     );
 
     ServiceDefinition {

@@ -71,7 +71,8 @@ pub struct TaskState {
     pub id: String,
     pub file_path: String,
     /// Held at runtime. Distinct from `disabled:` in the file, which travels
-    /// with the repository; a Task runs only when neither is set.
+    /// with the repository: a disabled Task is not scheduled at all, while a
+    /// paused one keeps its schedule and records a Skip per Tick.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paused: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]

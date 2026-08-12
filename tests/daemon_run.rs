@@ -741,3 +741,60 @@ async fn a_paused_task_does_not_fire_but_its_ticks_are_still_accounted_for() {
     daemon.wait_for_running().await;
     assert_eq!(env.calls().len(), 1, "released, so it runs again");
 }
+
+#[tokio::test]
+async fn a_skip_behind_a_run_in_the_same_pass_is_not_lost() {
+    let env = TestEnv::new();
+    env.write_task("aaa-runs", HOURLY_EXACT);
+    env.write_task("zzz-held", HOURLY_EXACT);
+    env.write_config();
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    daemon.set_paused(Some("proj/zzz-held"), true).unwrap();
+
+    // Both come due in one pass: the first starts a Run, the second is held.
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(env.calls().len(), 1, "the first one ran");
+    let skips = env.read_state()["recordedSkips"]["proj/zzz-held"].clone();
+    assert_eq!(
+        skips[0]["reason"], "paused",
+        "and the Tick behind it was still recorded — a Run starting must not \
+         swallow what the rest of the pass decided: {skips}"
+    );
+}
+
+#[tokio::test]
+async fn a_concurrency_cap_delays_a_tick_rather_than_dropping_it() {
+    let env = TestEnv::new();
+    env.write_gated_stub_agent();
+    env.write_task("first", HOURLY_EXACT);
+    env.write_task("second", HOURLY_EXACT);
+    env.write_config_with_extra("max_parallel = 1\n");
+
+    let (mut daemon, clock) = daemon_at(&env, "2026-08-11T00:30:00Z").await;
+    clock.set(at("2026-08-11T01:00:00Z"));
+    daemon.tick().await.unwrap();
+
+    assert_eq!(daemon.running_count(), 1, "only one slot, so only one Run");
+    let state = env.read_state();
+    assert!(
+        state["recordedSkips"]["proj/second"].is_null(),
+        "the one that waited was not skipped — it is delayed: {state}"
+    );
+
+    // Once the slot frees, the waiting Tick is still there to be answered.
+    env.open_gate();
+    daemon.wait_for_running().await;
+    daemon.tick().await.unwrap();
+    daemon.wait_for_running().await;
+
+    assert_eq!(env.calls().len(), 2, "both ran, one after the other");
+    assert_eq!(
+        env.read_run("proj/second", 0)["scheduledFor"],
+        "2026-08-11T01:00:00Z",
+        "and it records the Tick it answered, however late it started"
+    );
+}

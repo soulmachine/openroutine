@@ -37,13 +37,61 @@ Drop that in your repo as `todo-digest.cron.md` and it is the complete definitio
 
 The trade is honest in every direction: Routines gives you cloud execution, GitHub-event triggers, and managed sandboxing; ChatGPT gives you a polished cross-device inbox and change-monitoring; OpenRoutine gives you local files, local execution, no caps, and the freedom to swap the agent.
 
+## Install
+
+Requires a Rust toolchain; macOS and Linux only (Windows is an explicit non-goal).
+
+```bash
+cargo install --path .          # or: cargo build --release
+openroutine init .              # writes a config and a sample task
+openroutine list                # see what would run
+openroutine serve               # run the scheduler in the foreground
+openroutine install             # or register it as a boot service, no sudo
+```
+
+`init` writes `~/.config/openroutine/config.toml`, registers the directory you
+name, and leaves a sample `hello.cron.md` beside it. Nothing else to configure.
+
+## Using it
+
+```bash
+openroutine list                  # every task, its schedule, and its health
+openroutine status                # is the daemon up, and what does it hold
+openroutine run <task> --dry-run  # exactly what a run would do, spawning nothing
+openroutine run <task>            # fire one now, through the daemon
+openroutine logs <task> --follow  # tail the latest run
+openroutine pause --all           # stop everything firing, keep the daemon up
+openroutine open                  # the local web UI, no account
+```
+
+Tasks are files, so everything else is ordinary editing: drop a `.cron.md` in a
+registered directory and it schedules within seconds; `git pull` one in and the
+same happens, flagged as new so you notice. Turn one off with `disabled: true`
+in its frontmatter — a change your reviewer can see.
+
+The daemon also serves a REST API on `127.0.0.1:7373`, guarded by a bearer
+token (`openroutine token`), so alerting systems and git hooks can fire a task:
+
+```bash
+curl -X POST http://127.0.0.1:7373/v1/tasks/myrepo/todo-digest/fire \
+  -H "Authorization: Bearer $(openroutine token)" \
+  -d '{"text": "Sentry alert SEN-4521 fired in prod."}'
+```
+
+The optional `text` reaches the agent labelled as caller-supplied context, not
+as instructions — anyone who can reach the endpoint can send text, so text must
+not be able to redefine the task.
+
 ## Status
 
-**Design phase — no code yet.** The design is complete and recorded:
+**v1 is implemented**: scheduler, runner, REST API, and web UI, in one binary.
+[openroutine.md](openroutine.md) is the full design; [CONTEXT.md](CONTEXT.md)
+is the glossary; [docs/adr/](docs/adr/) records the architectural decisions.
 
-- [openroutine.md](openroutine.md) — the full design: scheduling semantics, storage, agent contract, API, and security model
-- [CONTEXT.md](CONTEXT.md) — the project glossary
-- [docs/adr/](docs/adr/) — architecture decisions of record
+Known limits, all deliberate: no GitHub-event triggers and no notifications
+(the fire endpoint is the integration point); state is written atomically
+against a killed process but is not fsynced against power loss; the web UI's
+rendering is verified by hand rather than by a browser harness.
 
 ## License
 

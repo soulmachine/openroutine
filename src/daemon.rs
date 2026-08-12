@@ -1,8 +1,9 @@
 //! The Daemon: scheduler and runner in one process.
 //!
 //! Time comes only from the injected [`Clock`], so the whole schedule can be
-//! driven deterministically. Every due Tick becomes exactly one Run, and a
-//! Run never blocks the scheduler — it is started, then awaited elsewhere.
+//! driven deterministically. Every due Tick becomes exactly one Run or one
+//! recorded Skip, and a Run never blocks the scheduler — it is started, then
+//! awaited elsewhere.
 
 use crate::clock::Clock;
 use crate::config::Config;
@@ -56,6 +57,7 @@ pub enum FireOutcome {
     Started(String),
     AlreadyRunning,
     Paused,
+    Disabled,
     NoSuchTask,
     Failed(String),
 }
@@ -72,6 +74,8 @@ pub enum CancelOutcome {
 pub struct ScheduledSummary {
     pub id: String,
     pub description: String,
+    /// Set when this Task is new or has changed since it last ran.
+    pub novelty: Option<&'static str>,
     pub schedule: String,
     pub path: String,
     pub one_shot: bool,
@@ -90,17 +94,6 @@ struct Pending {
     fire_at: DateTime<Utc>,
 }
 
-impl Scheduled {
-    /// Where the Agent starts: the Project root, or `cwd:` resolved against
-    /// it. Validated when the Task was scanned, so it exists.
-    fn working_dir(&self) -> PathBuf {
-        match &self.definition.cwd {
-            Some(cwd) => self.project_dir.join(cwd),
-            None => self.project_dir.clone(),
-        }
-    }
-}
-
 pub struct Daemon {
     /// Where the config was loaded from, so a rescan can pick up a Project
     /// registered or removed while the Daemon is running.
@@ -114,6 +107,9 @@ pub struct Daemon {
     /// Broken Tasks seen by the last scan: id, error, and whatever
     /// description survived. Reported, never scheduled.
     broken: Vec<(String, String, Option<String>)>,
+    /// Tasks switched off in their own files: id and description. Reported,
+    /// never scheduled.
+    disabled: Vec<(String, String)>,
     /// Runs started and not yet finished, by Task id — a Task appearing here
     /// is why its next Tick becomes an overlap Skip.
     running: HashMap<String, RunningRun>,
@@ -153,6 +149,7 @@ impl Daemon {
             state: State::default(),
             scheduled: Vec::new(),
             broken: Vec::new(),
+            disabled: Vec::new(),
             running: HashMap::new(),
             announced: HashMap::new(),
             catching_up: HashMap::new(),
@@ -239,6 +236,7 @@ impl Daemon {
 
         let mut scheduled = Vec::new();
         let mut broken = Vec::new();
+        let mut disabled = Vec::new();
 
         for task in scan.tasks {
             self.state
@@ -266,6 +264,13 @@ impl Daemon {
             self.announced.insert(task.id.clone(), notes);
 
             match task.health {
+                TaskHealth::Ready { definition, agent } if definition.disabled => {
+                    // Off in its own file: not scheduled, so no Ticks come
+                    // due and nothing accumulates. Still listed, still
+                    // visible — just not going to run.
+                    disabled.push((task.id.clone(), definition.description.clone()));
+                    let _ = agent;
+                }
                 TaskHealth::Ready { definition, agent } => {
                     if !self.has_scanned {
                         self.record_downtime(&task.id, &definition, now);
@@ -302,6 +307,8 @@ impl Daemon {
         self.scheduled = scheduled;
         broken.sort();
         self.broken = broken;
+        disabled.sort();
+        self.disabled = disabled;
         self.has_scanned = true;
 
         self.state.save(&self.state_dir)?;
@@ -369,17 +376,6 @@ impl Daemon {
             }
             candidate = definition.schedule.next_tick_after(candidate, &self.zone)?;
         }
-    }
-
-    /// The environment overrides a Run gets: the config's, then the Task's.
-    /// Later entries win, and `env` applies them after the profile has run.
-    fn run_environment(&self, definition: &TaskDefinition) -> Vec<(String, String)> {
-        self.config
-            .env
-            .iter()
-            .chain(definition.env.iter())
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect()
     }
 
     /// When a Tick actually fires, once this Task's jitter is applied.
@@ -472,9 +468,11 @@ impl Daemon {
         }
     }
 
-    /// Starts every Task whose Tick has come due and returns immediately. A
-    /// Task that missed several Ticks runs once, not once per Tick — there is
-    /// no catch-up.
+    /// Starts every Task whose Tick has come due and returns immediately.
+    ///
+    /// A Task that missed several Ticks runs once, not once per Tick: the
+    /// rest are recorded as Skips. Only `catch_up: true` asks for one of
+    /// those missed Ticks to be run after the fact.
     pub async fn tick(&mut self) -> Result<()> {
         let now = self.clock.now();
         self.running.retain(|_, run| !run.handle.is_finished());
@@ -497,10 +495,19 @@ impl Daemon {
         }
         self.catching_up.clear();
 
-        let mut answered_any = !due.is_empty();
+        let answered_any = !due.is_empty();
 
         for (index, tick) in due {
             let id = self.scheduled[index].id.clone();
+
+            // At capacity: the Tick waits for a slot rather than being lost.
+            // Its pending stays exactly where it is, so the next pass finds
+            // it still due, and the Run records how late it ended up.
+            if self.at_capacity() && !self.running.contains_key(&id) {
+                tracing::debug!(task = %id, scheduled_for = %tick, "waiting for a free slot");
+                continue;
+            }
+
             self.advance(index, tick, now);
             self.state.note_tick(&id, tick);
 
@@ -532,13 +539,14 @@ impl Daemon {
                 continue;
             }
 
-            match self.start_run(index, Some(tick), None) {
-                // `start_run` saves state itself once the Agent is away.
-                Ok(_) => answered_any = false,
-                Err(error) => tracing::error!(task = %id, "run failed to start: {error:#}"),
+            if let Err(error) = self.start_run(index, Some(tick), None) {
+                tracing::error!(task = %id, "run failed to start: {error:#}");
             }
         }
 
+        // One save for the whole pass, after every Tick in it has been
+        // answered. Saving as soon as the first Run started used to lose the
+        // Skips recorded by the Ticks behind it.
         if answered_any {
             self.state.save(&self.state_dir)?;
         }
@@ -657,7 +665,13 @@ impl Daemon {
         self.running.retain(|_, run| !run.handle.is_finished());
 
         let Some(index) = self.scheduled.iter().position(|entry| entry.id == task_id) else {
-            return FireOutcome::NoSuchTask;
+            // Switched off in its file, so it is not scheduled — and firing
+            // must not override what the file says.
+            return if self.disabled.iter().any(|(id, _)| id == task_id) {
+                FireOutcome::Disabled
+            } else {
+                FireOutcome::NoSuchTask
+            };
         };
         if self.running.contains_key(task_id) {
             return FireOutcome::AlreadyRunning;
@@ -667,9 +681,21 @@ impl Daemon {
         }
 
         match self.start_run(index, None, context) {
-            Ok(run_id) => FireOutcome::Started(run_id),
+            Ok(run_id) => {
+                if let Err(error) = self.state.save(&self.state_dir) {
+                    tracing::error!(task = %task_id, "recording the fired run: {error:#}");
+                }
+                FireOutcome::Started(run_id)
+            }
             Err(error) => FireOutcome::Failed(format!("{error:#}")),
         }
+    }
+
+    /// Whether every slot is taken.
+    fn at_capacity(&self) -> bool {
+        self.config
+            .max_parallel()
+            .is_some_and(|limit| self.running.len() >= limit)
     }
 
     /// Whether this Task has a Run in flight.
@@ -684,6 +710,11 @@ impl Daemon {
         self.scheduled
             .iter()
             .map(|entry| ScheduledSummary {
+                novelty: match self.state.last_run_digest(&entry.id) {
+                    None => Some("new"),
+                    Some(seen) if seen != entry.digest => Some("changed"),
+                    Some(_) => None,
+                },
                 id: entry.id.clone(),
                 description: entry.definition.description.clone(),
                 schedule: entry.definition.schedule.expression(),
@@ -699,6 +730,11 @@ impl Daemon {
     /// merely counted.
     pub fn broken_tasks(&self) -> Vec<(String, String, Option<String>)> {
         self.broken.clone()
+    }
+
+    /// Tasks switched off in their own files.
+    pub fn disabled_tasks(&self) -> Vec<(String, String)> {
+        self.disabled.clone()
     }
 
     /// The run state as the Daemon currently holds it.
@@ -729,7 +765,7 @@ impl Daemon {
             Some(text) => crate::fire::with_context(&task.definition.prompt, text),
             None => task.definition.prompt.clone(),
         };
-        let working_dir = task.working_dir();
+        let working_dir = task.definition.working_dir(&task.project_dir);
 
         // The Agent was resolved and checked when the Task was scanned; a
         // Task pointing at a missing one is Broken and never reaches here.
@@ -750,7 +786,7 @@ impl Daemon {
                     permission_mode: task.definition.permission_mode.as_deref(),
                 },
             )?,
-            &self.run_environment(&task.definition),
+            &task.definition.environment(&self.config.env),
         );
 
         let timeout = task.definition.timeout.unwrap_or(self.default_timeout);
@@ -819,7 +855,6 @@ impl Daemon {
             // And, for a One-shot, what finishes it.
             entry.completed_for = completes;
         }
-        self.state.save(&self.state_dir)?;
 
         let keep = self.retention_for(&task_id);
         match run::prune_runs(&self.state_dir, &task_id, keep) {

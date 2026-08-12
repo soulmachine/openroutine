@@ -264,18 +264,19 @@ fn a_broken_task_keeps_the_description_its_author_wrote() {
 #[test]
 fn a_schema_key_this_build_ignores_says_so_rather_than_calling_it_unknown() {
     let env = TestEnv::new();
+    // `tz` is in the v1 schema and reserved; this build does not act on it.
     env.write_task(
-        "off",
-        "---\ndescription: Switched off, in theory\ncron: \"@daily\"\nagent: stub\ndisabled: true\n---\n\nbody\n",
+        "zoned",
+        "---\ndescription: Wants its own zone\ncron: \"@daily\"\nagent: stub\ntz: Europe/Berlin\n---\n\nbody\n",
     );
     env.write_config();
 
     let out = env.run_ok(&["list"]);
 
-    assert!(out.contains("disabled"), "{out}");
+    assert!(out.contains("tz"), "{out}");
     assert!(
-        !out.contains("unknown frontmatter key: disabled"),
-        "`disabled` is part of the schema, not an unknown key — saying otherwise misleads:\n{out}"
+        !out.contains("unknown frontmatter key: tz"),
+        "`tz` is part of the schema, not an unknown key — saying otherwise misleads:\n{out}"
     );
     assert!(
         out.to_lowercase().contains("does not act on it yet"),

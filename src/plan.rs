@@ -36,7 +36,7 @@ where
             },
         )
         .map_err(|error| error.to_string())?,
-        &environment(config, definition),
+        &definition.environment(&config.env),
     );
 
     let mut out = format!(
@@ -74,11 +74,10 @@ where
         }
     ));
 
-    let working_dir = match &definition.cwd {
-        Some(cwd) => task.project_dir.join(cwd),
-        None => task.project_dir.clone(),
-    };
-    out.push_str(&format!("  cwd:      {}\n", working_dir.display()));
+    out.push_str(&format!(
+        "  cwd:      {}\n",
+        definition.working_dir(&task.project_dir).display()
+    ));
 
     let timeout = definition
         .timeout
@@ -129,15 +128,6 @@ fn humanise(duration: chrono::Duration) -> String {
         _ if seconds % 60 == 0 && seconds > 0 => format!("{}m", seconds / 60),
         _ => format!("{seconds}s"),
     }
-}
-
-fn environment(config: &Config, definition: &crate::task::TaskDefinition) -> Vec<(String, String)> {
-    config
-        .env
-        .iter()
-        .chain(definition.env.iter())
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect()
 }
 
 fn next_fire<Tz: TimeZone>(

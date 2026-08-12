@@ -6,6 +6,7 @@
 //! an **Agent** is a command template.
 
 pub mod api;
+pub mod client;
 pub mod clock;
 pub mod config;
 pub mod crontab;
@@ -23,6 +24,7 @@ pub mod schedule;
 pub mod service;
 pub mod state;
 pub mod task;
+pub mod text;
 pub mod token;
 pub mod ui;
 pub mod zone;

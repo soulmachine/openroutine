@@ -23,7 +23,7 @@ pub enum TaskError {
 /// Frontmatter keys the v1 schema defines but this build does not act on
 /// yet. Warned about specifically: telling someone their `disabled: true` is
 /// an "unknown key" would be a lie, and saying nothing would be worse.
-const NOT_YET_HONOURED: &[&str] = &["disabled", "on_failure", "tz"];
+const NOT_YET_HONOURED: &[&str] = &["on_failure", "tz"];
 
 /// The frontmatter exactly as written, before validation.
 #[derive(Debug, Deserialize)]
@@ -34,6 +34,10 @@ struct Frontmatter {
     at: Option<String>,
     #[serde(default)]
     catch_up: bool,
+    /// Switched off in the file itself — a reviewable commit rather than
+    /// invisible machine state.
+    #[serde(default)]
+    disabled: bool,
     agent: Option<String>,
     /// Accepts `2m`, `30s`, or a bare `0`, so it reads naturally either way.
     jitter: Option<serde_yaml_ng::Value>,
@@ -57,6 +61,9 @@ pub struct TaskDefinition {
     pub agent: Option<String>,
     /// Whether a Tick missed while the Daemon was away should still run.
     pub catch_up: bool,
+    /// Switched off in the file. Distinct from Paused, which is runtime
+    /// state; a Task runs only when neither is set.
+    pub disabled: bool,
     /// How far this Task's fire time may be nudged. `None` takes the default.
     pub jitter: Option<chrono::Duration>,
     /// How long the Run may take. `None` takes the configured default.
@@ -137,6 +144,7 @@ impl TaskDefinition {
             description,
             schedule,
             catch_up: parsed.catch_up,
+            disabled: parsed.disabled,
             agent: parsed.agent,
             jitter,
             timeout,
@@ -147,6 +155,25 @@ impl TaskDefinition {
             prompt: body.trim().to_string(),
             warnings,
         })
+    }
+
+    /// Where the Agent starts: the Project root, or `cwd:` resolved against
+    /// it. One definition, used by the scheduler and by `--dry-run` alike.
+    pub fn working_dir(&self, project_dir: &std::path::Path) -> std::path::PathBuf {
+        match &self.cwd {
+            Some(cwd) => project_dir.join(cwd),
+            None => project_dir.to_path_buf(),
+        }
+    }
+
+    /// The environment overrides a Run gets: the config's, then this Task's.
+    /// Later entries win, and `env` applies them after the profile has run.
+    pub fn environment(&self, config_env: &BTreeMap<String, String>) -> Vec<(String, String)> {
+        config_env
+            .iter()
+            .chain(self.env.iter())
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
     }
 
     /// The `description` alone, salvaged from a file that failed to parse, so

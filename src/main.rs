@@ -13,6 +13,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Where the Daemon keeps its own diagnostics, beside its state.
 const DAEMON_LOG: &str = "daemon.log";
+/// How long a stopping daemon waits for Runs already in flight.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// Set this to start with everything held.
+const DISABLE_ENV: &str = "OPENROUTINE_DISABLE";
 
 /// How often the scheduler looks for due Ticks. Minute-resolution cron needs
 /// nothing finer; the cost of a pass is a comparison per Task.
@@ -100,12 +104,16 @@ enum Command {
         #[arg(long)]
         rotate: bool,
     },
-    /// Work out what a Task would do.
+    /// Fire a Task now, or describe what firing it would do.
     Run {
         task: String,
         /// Describe the Run instead of starting one.
         #[arg(long)]
         dry_run: bool,
+        /// Context for this run: information for the agent, never
+        /// instructions, and it cannot redefine the task.
+        #[arg(long)]
+        text: Option<String>,
     },
 }
 
@@ -150,11 +158,6 @@ async fn main() -> Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
-    let config_path = match cli.config {
-        Some(path) => path,
-        None => config::default_config_path()?,
-    };
-
     tracing_subscriber::registry()
         .with(filter)
         .with(to_stderr)
@@ -169,7 +172,11 @@ async fn main() -> Result<()> {
         Command::Init { dir } => init(&config_path, &dir),
         Command::Status => status(&config_path),
         Command::Logs { task, follow } => logs(&config_path, &task, follow),
-        Command::Run { task, dry_run } => run(&config_path, &task, dry_run).await,
+        Command::Run {
+            task,
+            dry_run,
+            text,
+        } => run(&config_path, &task, dry_run, text.as_deref()).await,
         Command::Install { print } => install(&config_path, print),
         Command::Uninstall => uninstall(&config_path),
         Command::Token { rotate } => token(&config_path, rotate),
@@ -426,10 +433,29 @@ fn status(config_path: &std::path::Path) -> Result<()> {
             String::new()
         }
     );
+    let disabled = scan.tasks.iter().filter(|task| task.is_disabled()).count();
     println!(
-        "tasks:    {} ready, {broken} broken, {flagged} flagged",
-        scan.tasks.len() - broken
+        "tasks:    {} ready, {disabled} disabled, {broken} broken, {flagged} flagged",
+        scan.tasks.len() - broken - disabled
     );
+    if state.paused {
+        println!("paused:   yes — nothing will fire until you resume");
+    } else {
+        let held: Vec<&str> = scan
+            .tasks
+            .iter()
+            .filter(|task| state.is_paused(&task.id))
+            .map(|task| task.id.as_str())
+            .collect();
+        println!(
+            "paused:   {}",
+            if held.is_empty() {
+                "no".to_string()
+            } else {
+                format!("{} task(s): {}", held.len(), held.join(", "))
+            }
+        );
+    }
     Ok(())
 }
 
@@ -494,14 +520,26 @@ fn follow_file(path: &std::path::Path) -> Result<()> {
 }
 
 /// Describes what a Run would do, or explains why it cannot.
-async fn run(config_path: &std::path::Path, wanted: &str, dry_run: bool) -> Result<()> {
+async fn run(
+    config_path: &std::path::Path,
+    wanted: &str,
+    dry_run: bool,
+    text: Option<&str>,
+) -> Result<()> {
     let config = Config::load(config_path)?;
     let scan = openroutine::discovery::scan_all(&config);
     let task = resolve(&scan.tasks, wanted)?;
 
     if !dry_run {
         let id = task.id.clone();
-        let answer = call_api(config_path, "POST", &format!("/v1/tasks/{id}/fire"), None).await?;
+        let body = text.map(|text| serde_json::json!({ "text": text }).to_string());
+        let answer = call_api(
+            config_path,
+            "POST",
+            &format!("/v1/tasks/{id}/fire"),
+            body.as_deref(),
+        )
+        .await?;
         println!(
             "Started {} — {}",
             answer["run_id"].as_str().unwrap_or("a run"),
@@ -588,7 +626,7 @@ async fn call_api(
     config_path: &std::path::Path,
     method: &str,
     path: &str,
-    body: Option<String>,
+    body: Option<&str>,
 ) -> Result<serde_json::Value> {
     let config = Config::load(config_path)?;
     let state_dir = config.state_dir()?;
@@ -598,29 +636,16 @@ async fn call_api(
     let token = openroutine::token::read(&state_dir)?
         .context("the daemon has no API token yet; start it once with `openroutine serve`")?;
 
-    let url = format!("http://{}{path}", config.bind());
-    let mut request = std::process::Command::new("curl");
-    request
-        .args(["-s", "-X", method, "-H"])
-        .arg(format!("Authorization: Bearer {token}"))
-        .arg("-w")
-        .arg("\n%{http_code}");
-    if let Some(body) = &body {
-        request.args(["-H", "Content-Type: application/json", "-d", body]);
-    }
-    let output = request
-        .arg(&url)
-        .output()
-        .context("running curl to reach the daemon")?;
+    let answer = openroutine::client::send(&config.bind(), &token, method, path, body).await?;
+    let parsed = answer.json();
 
-    let raw = String::from_utf8_lossy(&output.stdout);
-    let (payload, code) = raw.rsplit_once('\n').unwrap_or(("", "0"));
-    let parsed: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::json!({}));
-
-    if code.trim().starts_with('2') {
+    if answer.ok() {
         Ok(parsed)
     } else {
-        anyhow::bail!("{}", parsed["error"]["message"].as_str().unwrap_or(payload))
+        anyhow::bail!(
+            "{}",
+            parsed["error"]["message"].as_str().unwrap_or(&answer.body)
+        )
     }
 }
 
@@ -737,6 +762,14 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
     // Safe only because the lock says no other Daemon is alive: any Run
     // still marked running belongs to a process that is gone.
     daemon.recover_interrupted_runs();
+
+    // A way to start held that does not need the API to be reachable — for
+    // a machine you want up and inspectable but firing nothing.
+    if std::env::var_os(DISABLE_ENV).is_some_and(|value| !value.is_empty()) {
+        daemon.set_paused(None, true)?;
+        tracing::warn!("{DISABLE_ENV} is set: everything is paused and nothing will fire");
+    }
+
     daemon.reload().await?;
     tracing::info!(
         state_dir = %daemon.state_dir().display(),
@@ -753,6 +786,16 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .with_context(|| format!("listening on {bind}"))?;
+    if !bind.starts_with("127.0.0.1:")
+        && !bind.starts_with("localhost:")
+        && !bind.starts_with("[::1]:")
+    {
+        tracing::warn!(
+            %bind,
+            "the api is reachable beyond this machine; it is guarded only by a bearer token \
+             over plain http, so an ssh tunnel or a private network is the safer arrangement"
+        );
+    }
     tracing::info!(%bind, "api listening");
     let server = tokio::spawn(
         axum::serve(listener, {
@@ -789,9 +832,27 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
                 reload(&mut *daemon.lock().await).await;
             }
             signal = shutdown.recv() => {
+                server.abort();
                 let in_flight = daemon.lock().await.running_count();
                 tracing::info!(signal, in_flight, "shutting down");
-                server.abort();
+
+                // Give whatever is mid-run a moment to finish and record
+                // itself, rather than leaving it to be found and marked
+                // interrupted next time. Bounded, because a run may have
+                // asked for no timeout at all.
+                if in_flight > 0 {
+                    let waited = tokio::time::timeout(
+                        SHUTDOWN_GRACE,
+                        daemon.lock().await.wait_for_running(),
+                    )
+                    .await;
+                    if waited.is_err() {
+                        tracing::warn!(
+                            "still running after {SHUTDOWN_GRACE:?}; they will be recorded as \
+                             interrupted on the next start"
+                        );
+                    }
+                }
                 return Ok(());
             }
         }

@@ -47,6 +47,12 @@ impl ScannedTask {
         matches!(self.health, TaskHealth::Broken { .. })
     }
 
+    /// Whether the file itself says not to run this.
+    pub fn is_disabled(&self) -> bool {
+        self.definition()
+            .is_some_and(|definition| definition.disabled)
+    }
+
     pub fn definition(&self) -> Option<&TaskDefinition> {
         match &self.health {
             TaskHealth::Ready { definition, .. } => Some(definition),

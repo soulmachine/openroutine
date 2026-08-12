@@ -21,7 +21,7 @@ A single execution of a Task's prompt by its Agent, produced by a scheduled Tick
 _Avoid_: execution, invocation
 
 **Skip**:
-A Tick that was not run, recorded with its reason: the previous Run was still active (`overlap`), the Daemon was down when the Tick passed (`daemon-down`), or the Daemon was running but reached the Tick too late (`missed`). Never silent — every Tick becomes exactly one Run or one Skip.
+A Tick that was not run, recorded with its reason: the previous Run was still active (`overlap`), the Daemon was down when the Tick passed (`daemon-down`), the Daemon was running but reached the Tick too late (`missed`), or the Task was held (`paused`). Never silent — every Tick becomes exactly one Run or one Skip.
 _Avoid_: dropped run, lost tick
 
 **Timeout**:
@@ -57,7 +57,7 @@ Opting a Task into running one Tick it missed while the Daemon was away, if that
 _Avoid_: backfill, replay
 
 **Disabled**:
-A Task switched off in its own definition (frontmatter). Part of the reviewable, diffable file.
+A Task switched off in its own definition (frontmatter). Part of the reviewable, diffable file, and not scheduled at all — so it accrues no Ticks and no Skips, unlike a Paused Task.
 _Avoid_: paused
 
 **Paused**:

@@ -87,9 +87,25 @@ where
 
     // Descriptions come from whoever can commit to the Project; a newline
     // would otherwise break the row apart.
-    let description = one_line(task.description().unwrap_or(NOT_APPLICABLE));
+    let description = crate::text::one_line(task.description().unwrap_or(NOT_APPLICABLE));
 
     let cells = match &task.health {
+        TaskHealth::Ready { definition, agent } if definition.disabled => [
+            "disabled".to_string(),
+            task.id.clone(),
+            description,
+            definition.schedule.expression(),
+            agent.clone(),
+            NOT_APPLICABLE.to_string(),
+        ],
+        TaskHealth::Ready { definition, agent } if state.is_paused(&task.id) => [
+            "paused".to_string(),
+            task.id.clone(),
+            description,
+            definition.schedule.expression(),
+            agent.clone(),
+            NOT_APPLICABLE.to_string(),
+        ],
         TaskHealth::Ready { definition, agent } => {
             let next_fire = definition
                 .schedule
@@ -125,17 +141,6 @@ where
     Row { cells, notes }
 }
 
-/// Collapses anything multi-line into a single readable line.
-fn one_line(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn push_cells(out: &mut String, cells: &[String; COLUMNS], widths: &[usize; COLUMNS]) {
     let last = cells.len() - 1;
     for (index, (cell, width)) in cells.iter().zip(widths).enumerate() {
@@ -150,12 +155,16 @@ fn push_cells(out: &mut String, cells: &[String; COLUMNS], widths: &[usize; COLU
 
 fn summarize(tasks: &[ScannedTask]) -> String {
     let broken = tasks.iter().filter(|task| task.is_broken()).count();
+    let disabled = tasks.iter().filter(|task| task.is_disabled()).count();
     let warned = tasks
         .iter()
         .filter(|task| !task.warnings().is_empty())
         .count();
 
-    let mut parts = vec![format!("{} ready", tasks.len() - broken)];
+    let mut parts = vec![format!("{} ready", tasks.len() - broken - disabled)];
+    if disabled > 0 {
+        parts.push(format!("{disabled} disabled"));
+    }
     if broken > 0 {
         parts.push(format!("{broken} broken"));
     }

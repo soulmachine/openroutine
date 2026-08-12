@@ -75,23 +75,6 @@ fn write_one(dir: &Path, tasks: &[&ScannedTask]) -> Result<(), String> {
         .map_err(|error| format!("writing {}: {error}", path.display()))
 }
 
-/// Makes a value safe to put in a markdown table cell.
-///
-/// A description is written by whoever can commit to the Project, and this
-/// file is committed and read by both people and agents — so a stray `|` or
-/// newline must not be able to reshape the table or add content of its own.
-fn cell(value: &str) -> String {
-    let flattened: String = value
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    flattened
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace('|', "\\|")
-}
-
 fn render(tasks: &[&ScannedTask]) -> String {
     let mut out = String::from(HEADER);
     for task in tasks {
@@ -107,10 +90,10 @@ fn render(tasks: &[&ScannedTask]) -> String {
         };
         out.push_str(&format!(
             "| {name} | {description} | {schedule} | {agent} |\n",
-            name = cell(name),
-            description = cell(task.description().unwrap_or("—")),
-            schedule = cell(&schedule),
-            agent = cell(&agent),
+            name = crate::text::table_cell(name),
+            description = crate::text::table_cell(task.description().unwrap_or("—")),
+            schedule = crate::text::table_cell(&schedule),
+            agent = crate::text::table_cell(&agent),
         ));
     }
     if tasks.is_empty() {

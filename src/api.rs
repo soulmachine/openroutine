@@ -118,6 +118,24 @@ async fn list_tasks(State(api): State<Api>, headers: HeaderMap) -> Result<Json<V
                 })
             }),
     );
+    tasks.extend(
+        daemon
+            .disabled_tasks()
+            .into_iter()
+            .map(|(id, description)| {
+                json!({
+                    "id": id,
+                    "description": description,
+                    "disabled": true,
+                    "schedule": null,
+                    "nextTick": null,
+                    "nextFireAt": null,
+                    "running": false,
+                    "paused": false,
+                    "completed": false,
+                })
+            }),
+    );
     tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     Ok(Json(
         json!({ "tasks": tasks, "paused": daemon.is_paused(None) }),
@@ -133,13 +151,34 @@ async fn task_detail(
     let id = format!("{project}/{name}");
     let daemon = api.daemon.lock().await;
 
-    let summary = daemon
+    // A Task that cannot run is addressable too — 404-ing the one you most
+    // need to look at would be perverse.
+    let mut body = match daemon
         .scheduled_tasks()
         .into_iter()
         .find(|task| task.id == id)
-        .ok_or_else(|| unknown_task(&id))?;
-
-    let mut body = summarise(&daemon, &summary);
+    {
+        Some(summary) => summarise(&daemon, &summary),
+        None => match daemon
+            .broken_tasks()
+            .into_iter()
+            .find(|(other, _, _)| other == &id)
+        {
+            Some((_, error, description)) => {
+                json!({ "id": id, "description": description, "error": error, "broken": true })
+            }
+            None => match daemon
+                .disabled_tasks()
+                .into_iter()
+                .find(|(other, _)| other == &id)
+            {
+                Some((_, description)) => {
+                    json!({ "id": id, "description": description, "disabled": true })
+                }
+                None => return Err(unknown_task(&id)),
+            },
+        },
+    };
     // Embedded rather than behind another endpoint: the reason a Task did
     // not run belongs beside the Task.
     body["skips"] = json!(
@@ -158,6 +197,7 @@ fn summarise(daemon: &Daemon, task: &crate::daemon::ScheduledSummary) -> Value {
     json!({
         "id": task.id,
         "description": task.description,
+        "novelty": task.novelty,
         "schedule": task.schedule,
         "path": task.path,
         "oneShot": task.one_shot,
@@ -198,7 +238,9 @@ async fn task_runs(
     let daemon = api.daemon.lock().await;
     let mut runs = crate::run::read_history(daemon.state_dir(), &id);
     runs.reverse(); // newest first
-    runs.truncate(paging.limit.unwrap_or(50));
+    // Bounded whatever is asked for: a caller should not be able to make the
+    // daemon read ten thousand records into memory.
+    runs.truncate(paging.limit.unwrap_or(50).min(500));
     Ok(Json(json!({ "runs": runs })))
 }
 
@@ -312,6 +354,11 @@ async fn fire(
             StatusCode::CONFLICT,
             "paused",
             format!("{id} is paused; resume it before firing"),
+        )),
+        FireOutcome::Disabled => Err(Failure(
+            StatusCode::CONFLICT,
+            "disabled",
+            format!("{id} is disabled in its own file; remove `disabled: true` to run it"),
         )),
         FireOutcome::NoSuchTask => Err(unknown_task(&id)),
         FireOutcome::Failed(reason) => Err(Failure(

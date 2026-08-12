@@ -32,6 +32,10 @@ pub struct Config {
     /// and under whatever the Task itself sets.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// How many Runs may be in flight at once, across every Task. Unset
+    /// means whatever the hardware tolerates.
+    #[serde(default)]
+    pub max_parallel: Option<usize>,
     /// How many Runs of each Task are kept on disk.
     #[serde(default)]
     pub max_runs_per_task: Option<usize>,
@@ -137,6 +141,11 @@ impl Config {
             Some(dir) => Ok(dir.clone()),
             None => default_state_dir(),
         }
+    }
+
+    /// The ceiling on concurrent Runs, if there is one.
+    pub fn max_parallel(&self) -> Option<usize> {
+        self.max_parallel
     }
 
     /// Runs kept per Task before the oldest are pruned.
