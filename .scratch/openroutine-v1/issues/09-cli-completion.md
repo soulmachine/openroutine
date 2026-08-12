@@ -12,3 +12,4 @@
 - [ ] `--dry-run` shows the exact argv (metacharacters inert), delivery mode, cwd, timeout, and env override keys a real Run would use, and spawns nothing
 - [ ] `--dry-run` on cron Tasks predicts jittered next fires; on One-shots the absolute time; on Manual Tasks "no schedule"; on Broken Tasks the validation error
 - [ ] Bare Task names work where unambiguous; ambiguous names list the `<project>/<name>` candidates
+- [ ] Carried from the ticket-05 review: `--dry-run` prints the resolved argv, which is the first chance to assert the login-shell invocation itself (`$SHELL -l -c 'exec "$0" "$@"' …`) at the process boundary — cover it here

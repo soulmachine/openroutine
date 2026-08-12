@@ -115,3 +115,48 @@ pub fn log_header(record: &RunRecord) -> String {
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     )
 }
+
+/// Copies a Run's output into its log, stopping at `cap` bytes.
+///
+/// The pipe keeps draining past the cap so a chatty Agent never blocks on a
+/// full buffer; the excess is simply discarded, with one line saying so.
+pub fn capture_output(mut reader: std::io::PipeReader, log_path: &Path, cap: u64) -> Result<u64> {
+    use std::io::{Read, Write};
+
+    let mut log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(log_path)
+        .with_context(|| format!("opening {}", log_path.display()))?;
+
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut written: u64 = 0;
+    let mut discarded: u64 = 0;
+
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error).context("reading agent output"),
+        };
+
+        let room = cap.saturating_sub(written) as usize;
+        if room > 0 {
+            let take = room.min(read);
+            log.write_all(&buffer[..take])
+                .context("writing agent output")?;
+            written += take as u64;
+        }
+        discarded += (read - room.min(read)) as u64;
+    }
+
+    if discarded > 0 {
+        writeln!(
+            log,
+            "\n--- output truncated at {cap} bytes; {discarded} more discarded ---"
+        )
+        .context("writing the truncation marker")?;
+    }
+    log.flush().context("flushing the log")?;
+    Ok(written)
+}

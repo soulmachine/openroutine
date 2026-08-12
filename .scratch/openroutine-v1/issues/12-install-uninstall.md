@@ -12,3 +12,4 @@
 - [ ] On Linux, lingering is enabled so the daemon runs with no active session
 - [ ] The installed daemon still launches Runs through the login shell with a real environment (the stripped-service-env failure mode this project exists to fix)
 - [ ] `status` reflects supervised-vs-foreground appropriately
+- [ ] Carried from the ticket-05 review: `SHELL` is usually absent under launchd, so a supervised daemon falls back to `/bin/sh` instead of the user's shell — which undercuts the real-environment guarantee this project exists for. The service definition should carry it

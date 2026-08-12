@@ -19,12 +19,19 @@ pub fn at(iso: &str) -> DateTime<Utc> {
         .with_timezone(&Utc)
 }
 
-/// One invocation of the stub Agent, as the stub itself recorded it.
+/// One call of the stub Agent, as the stub itself recorded it.
 #[derive(Debug, Clone)]
-pub struct Invocation {
+pub struct AgentCall {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub stdin: String,
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+impl AgentCall {
+    pub fn var(&self, name: &str) -> Option<&str> {
+        self.env.get(name).map(String::as_str)
+    }
 }
 
 pub struct TestEnv {
@@ -84,6 +91,7 @@ impl TestEnv {
 record="$(mktemp {record_dir}/inv-XXXXXXXX)"
 for arg in "$@"; do printf '%s\0' "$arg"; done > "$record.args"
 pwd > "$record.cwd"
+env > "$record.env"
 cat > "$record.stdin"
 printf 'stub agent ran\n'
 printf 'a line on stderr\n' >&2
@@ -115,6 +123,58 @@ printf 'stub agent ran\n'
         let path = self.stub_path();
         fs::write(&path, script).unwrap();
         make_executable(&path);
+    }
+
+    /// A stub Agent that forks a child which outlives it, then hangs. Used to
+    /// prove a timeout kills the whole process group, not just the Agent.
+    pub fn write_forking_stub_agent(&self, marker: &Path) {
+        let script = format!(
+            r#"#!/bin/sh
+record="$(mktemp {record_dir}/inv-XXXXXXXX)"
+for arg in "$@"; do printf '%s\0' "$arg"; done > "$record.args"
+pwd > "$record.cwd"
+env > "$record.env"
+: > "$record.stdin"
+( sleep 2; : > "{marker}" ) &
+while true; do sleep 0.2; done
+"#,
+            record_dir = self.record_dir().display(),
+            marker = marker.display(),
+        );
+        let path = self.stub_path();
+        fs::write(&path, script).unwrap();
+        make_executable(&path);
+    }
+
+    /// A stub Agent that floods its output.
+    pub fn write_noisy_stub_agent(&self, lines: usize) {
+        let script = format!(
+            r#"#!/bin/sh
+record="$(mktemp {record_dir}/inv-XXXXXXXX)"
+for arg in "$@"; do printf '%s\0' "$arg"; done > "$record.args"
+pwd > "$record.cwd"
+env > "$record.env"
+: > "$record.stdin"
+i=0
+while [ $i -lt {lines} ]; do
+  printf 'noisy line %s ........................................\n' "$i"
+  i=$((i+1))
+done
+"#,
+            record_dir = self.record_dir().display(),
+            lines = lines,
+        );
+        let path = self.stub_path();
+        fs::write(&path, script).unwrap();
+        make_executable(&path);
+    }
+
+    /// The standard config plus extra top-level TOML prepended.
+    pub fn write_config_with_extra(&self, extra: &str) -> PathBuf {
+        self.write_config_toml(
+            &format!("{} --run {{prompt}}", self.stub_path().display()),
+            extra,
+        )
     }
 
     pub fn gate_path(&self) -> PathBuf {
@@ -188,7 +248,7 @@ printf 'stub agent ran\n'
     }
 
     /// Every stub invocation, oldest first.
-    pub fn invocations(&self) -> Vec<Invocation> {
+    pub fn invocations(&self) -> Vec<AgentCall> {
         let mut records: Vec<PathBuf> = fs::read_dir(self.record_dir())
             .unwrap()
             .filter_map(|entry| {
@@ -209,7 +269,7 @@ printf 'stub agent ran\n'
                     .filter(|piece| !piece.is_empty())
                     .map(str::to_string)
                     .collect();
-                Invocation {
+                AgentCall {
                     args,
                     cwd: PathBuf::from(
                         fs::read_to_string(stem.with_extension("cwd"))
@@ -218,6 +278,12 @@ printf 'stub agent ran\n'
                             .to_string(),
                     ),
                     stdin: fs::read_to_string(stem.with_extension("stdin")).unwrap(),
+                    env: fs::read_to_string(stem.with_extension("env"))
+                        .unwrap_or_default()
+                        .lines()
+                        .filter_map(|line| line.split_once('='))
+                        .map(|(name, value)| (name.to_string(), value.to_string()))
+                        .collect(),
                 }
             })
             .collect()

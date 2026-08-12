@@ -73,6 +73,10 @@ fn list(config_path: &std::path::Path) -> Result<()> {
 }
 
 async fn serve(config_path: &std::path::Path) -> Result<()> {
+    // Before anything slow: a scan of a large project takes time, and a
+    // service manager that signals during startup must not have to kill us.
+    let mut shutdown = Shutdown::listen()?;
+
     let config = Config::load(config_path)?;
     let mut daemon = Daemon::new(config, std::sync::Arc::new(SystemClock))?;
 
@@ -89,12 +93,6 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
 
     let mut ticker = tokio::time::interval(TICK_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    // Registered once, before the loop: tokio installs a process-wide handler
-    // on first use, so a stream recreated each iteration can miss a signal
-    // that lands between iterations — and a daemon that ignores SIGTERM is a
-    // daemon its service manager has to kill.
-    let mut shutdown = Shutdown::listen()?;
 
     loop {
         tokio::select! {

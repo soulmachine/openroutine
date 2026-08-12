@@ -24,6 +24,10 @@ _Avoid_: execution, invocation
 A Tick that was not run, recorded with its reason: the previous Run was still active (`overlap`), the Daemon was down when the Tick passed (`daemon-down`), or the Daemon was running but reached the Tick too late (`missed`). Never silent — every Tick becomes exactly one Run or one Skip.
 _Avoid_: dropped run, lost tick
 
+**Timeout**:
+The wall-clock budget for a single Run. When it expires the Run's whole process group is ended and the Run is recorded as timed out — never left hanging.
+_Avoid_: deadline, TTL
+
 **Jitter**:
 The deterministic offset between a Task's Tick and the moment it actually fires, derived from the Task id so it never changes between runs. Spreads a machine full of midnight Tasks without making any of them unpredictable.
 _Avoid_: splay, randomization, fuzz

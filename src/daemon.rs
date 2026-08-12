@@ -39,6 +39,17 @@ struct Scheduled {
     next_fire_at: Option<DateTime<Utc>>,
 }
 
+impl Scheduled {
+    /// Where the Agent starts: the Project root, or `cwd:` resolved against
+    /// it. Validated when the Task was scanned, so it exists.
+    fn working_dir(&self) -> PathBuf {
+        match &self.definition.cwd {
+            Some(cwd) => self.project_dir.join(cwd),
+            None => self.project_dir.clone(),
+        }
+    }
+}
+
 pub struct Daemon {
     config: Config,
     clock: Arc<dyn Clock>,
@@ -51,6 +62,9 @@ pub struct Daemon {
     /// Runs started and not yet finished, by Task id — a Task appearing here
     /// is why its next Tick becomes an overlap Skip.
     running: HashMap<String, JoinHandle<()>>,
+    /// Resolved once at construction: a bad value must fail loudly at
+    /// startup, not silently at 2am when a Tick tries to use it.
+    default_timeout: crate::task::Timeout,
     /// Whether this Daemon has scanned yet. Downtime is a startup question:
     /// only the first scan can tell missed Ticks from ordinary ones.
     has_scanned: bool,
@@ -68,7 +82,9 @@ impl Daemon {
         // One state root serves the whole machine (ADR-0001); failing to
         // resolve it is fatal, never a silent fallback to somewhere else.
         let state_dir = config.state_dir()?;
+        let default_timeout = config.default_timeout()?;
         Ok(Self {
+            default_timeout,
             config,
             clock,
             zone,
@@ -187,6 +203,17 @@ impl Daemon {
             }
             candidate = definition.schedule.next_tick_after(candidate, &self.zone)?;
         }
+    }
+
+    /// The environment overrides a Run gets: the config's, then the Task's.
+    /// Later entries win, and `env` applies them after the profile has run.
+    fn run_environment(&self, definition: &TaskDefinition) -> Vec<(String, String)> {
+        self.config
+            .env
+            .iter()
+            .chain(definition.env.iter())
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
     }
 
     /// When a Tick actually fires, once this Task's jitter is applied.
@@ -363,13 +390,14 @@ impl Daemon {
         }
     }
 
-    /// Starts one Run: records it as running, spawns the Agent, and hands the
-    /// waiting to a background task so the scheduler stays responsive.
+    /// Starts one Run: records it as running, spawns the Agent under a login
+    /// shell, and hands the waiting to a background task so the scheduler
+    /// stays responsive.
     fn start_run(&mut self, index: usize, scheduled_for: Option<DateTime<Utc>>) -> Result<()> {
         let task = &self.scheduled[index];
         let task_id = task.id.clone();
-        let working_dir = task.project_dir.clone();
         let prompt = task.definition.prompt.clone();
+        let working_dir = task.working_dir();
 
         // The Agent was resolved and checked when the Task was scanned; a
         // Task pointing at a missing one is Broken and never reaches here.
@@ -380,7 +408,20 @@ impl Daemon {
             .with_context(|| format!("task {task_id} names unknown agent {agent_name:?}"))?
             .cmd
             .clone();
-        let command = runner::build_command(&template, &prompt)?;
+
+        let command = runner::login_shell_command(
+            runner::build_command(
+                &template,
+                &runner::AgentParams {
+                    prompt: &prompt,
+                    model: task.definition.model.as_deref(),
+                    permission_mode: task.definition.permission_mode.as_deref(),
+                },
+            )?,
+            &self.run_environment(&task.definition),
+        );
+
+        let timeout = task.definition.timeout.unwrap_or(self.default_timeout);
 
         let started_at = self.clock.now();
         let (run_id, run_dir) = run::create_run_dir(&self.state_dir, &task_id, started_at)?;
@@ -400,31 +441,37 @@ impl Daemon {
         // crash still leaves a readable record beside its log.
         record.write_to(&run_dir)?;
 
-        // Header first, then hand the appending file to both streams so the
-        // agent's stdout and stderr interleave in their real order.
         let log_path = run_dir.join(run::RUN_LOG);
         std::fs::write(&log_path, run::log_header(&record))
             .with_context(|| format!("writing {}", log_path.display()))?;
-        let log = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&log_path)
-            .with_context(|| format!("opening {}", log_path.display()))?;
 
+        // One pipe carries both streams, so stdout and stderr interleave in
+        // their real order — and so the copy can stop at the cap without the
+        // Agent noticing.
+        let (reader, writer) = std::io::pipe().context("creating the output pipe")?;
         let mut process = tokio::process::Command::new(&command.program);
         process
             .args(&command.args)
             .current_dir(&working_dir)
-            .stdout(Stdio::from(log.try_clone()?))
-            .stderr(Stdio::from(log))
+            .stdout(Stdio::from(writer.try_clone()?))
+            .stderr(Stdio::from(writer))
             .stdin(if command.prompt_on_stdin {
                 Stdio::piped()
             } else {
                 Stdio::null()
-            });
+            })
+            // Its own process group, so a timeout can take the Agent's whole
+            // tree of children with it rather than orphaning them.
+            .process_group(0);
 
         let mut child = process
             .spawn()
             .with_context(|| format!("spawning agent for {task_id}"))?;
+        let group = child.id().map(|pid| pid as i32);
+
+        let cap = self.config.max_log_bytes();
+        let capture =
+            tokio::task::spawn_blocking(move || run::capture_output(reader, &log_path, cap));
 
         if let Some(entry) = self.state.task_mut(&task_id) {
             entry.last_run_at = Some(started_at);
@@ -443,8 +490,8 @@ impl Daemon {
                 tracing::warn!(task = %record.task_id, "writing prompt to stdin: {error}");
             }
 
-            match child.wait().await {
-                Ok(status) => {
+            match await_child(&mut child, group, timeout).await {
+                Outcome::Exited(status) => {
                     record.exit_code = status.code();
                     record.status = if status.success() {
                         RunStatus::Succeeded
@@ -452,10 +499,32 @@ impl Daemon {
                         RunStatus::Failed
                     };
                 }
-                Err(error) => {
+                Outcome::TimedOut => {
+                    tracing::warn!(task = %record.task_id, "timed out; killed the process group");
+                    record.status = RunStatus::TimedOut;
+                }
+                Outcome::Failed(error) => {
                     tracing::error!(task = %record.task_id, "waiting for agent: {error}");
                     record.status = RunStatus::Interrupted;
                 }
+            }
+
+            // The log is complete once the pipe drains. A grandchild that
+            // outlives the Agent can hold the write end open, so this waits
+            // only so long — a Run must not stay "running" forever because
+            // something it started refuses to let go.
+            match tokio::time::timeout(CAPTURE_GRACE, capture).await {
+                Ok(Ok(Ok(_))) => {}
+                Ok(Ok(Err(error))) => {
+                    tracing::error!(task = %record.task_id, "capturing output: {error:#}");
+                }
+                Ok(Err(error)) => {
+                    tracing::error!(task = %record.task_id, "output capture failed: {error}");
+                }
+                Err(_) => tracing::warn!(
+                    task = %record.task_id,
+                    "output still open after the agent exited; something it started is holding it"
+                ),
             }
 
             record.finished_at = Some(clock.now());
@@ -466,5 +535,75 @@ impl Daemon {
         self.running.insert(task_id, handle);
 
         Ok(())
+    }
+}
+
+/// How a Run ended.
+enum Outcome {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+    Failed(std::io::Error),
+}
+
+/// How long a signalled process group gets to wind down before it is killed.
+const KILL_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long to keep draining output after the Agent itself has exited.
+const CAPTURE_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Waits for the Agent, enforcing its timeout.
+///
+/// Timeouts are measured against real elapsed time, not the injected clock:
+/// a Run's budget is about how long a process may spend, which is a different
+/// question from when the schedule says it should start.
+async fn await_child(
+    child: &mut tokio::process::Child,
+    group: Option<i32>,
+    timeout: crate::task::Timeout,
+) -> Outcome {
+    let budget = match timeout {
+        crate::task::Timeout::Never => None,
+        crate::task::Timeout::After(duration) => duration.to_std().ok(),
+    };
+
+    let Some(budget) = budget else {
+        return match child.wait().await {
+            Ok(status) => Outcome::Exited(status),
+            Err(error) => Outcome::Failed(error),
+        };
+    };
+
+    tokio::select! {
+        finished = child.wait() => match finished {
+            Ok(status) => Outcome::Exited(status),
+            Err(error) => Outcome::Failed(error),
+        },
+        _ = tokio::time::sleep(budget) => {
+            terminate(child, group).await;
+            Outcome::TimedOut
+        }
+    }
+}
+
+/// Ends a Run's whole process group: SIGTERM, a grace period, then SIGKILL.
+async fn terminate(child: &mut tokio::process::Child, group: Option<i32>) {
+    // Everything below signals the group *before* the leader is reaped. Once
+    // the leader's pid is freed the kernel may hand it to someone else, and
+    // signalling then would hit an unrelated process group.
+    signal_group(group, libc::SIGTERM);
+
+    if tokio::time::timeout(KILL_GRACE, child.wait()).await.is_ok() {
+        return;
+    }
+
+    signal_group(group, libc::SIGKILL);
+    let _ = child.wait().await;
+}
+
+fn signal_group(group: Option<i32>, signal: i32) {
+    if let Some(group) = group {
+        // Safety: `killpg` on a group we created; a dead group is simply ESRCH.
+        unsafe {
+            libc::killpg(group, signal);
+        }
     }
 }

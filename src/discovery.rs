@@ -92,7 +92,7 @@ pub fn scan_project(project: &ProjectConfig, config: &Config) -> Vec<ScannedTask
             let name = task_name(&path)?;
             Some(ScannedTask {
                 id: format!("{project_name}/{name}"),
-                health: assess(&path, config),
+                health: assess(&path, &project_dir, config),
                 path,
                 project: project_name.clone(),
                 project_dir: project_dir.clone(),
@@ -102,7 +102,7 @@ pub fn scan_project(project: &ProjectConfig, config: &Config) -> Vec<ScannedTask
 }
 
 /// Reads and validates one Task file.
-fn assess(path: &Path, config: &Config) -> TaskHealth {
+fn assess(path: &Path, project_dir: &Path, config: &Config) -> TaskHealth {
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
         Err(error) => {
@@ -118,10 +118,33 @@ fn assess(path: &Path, config: &Config) -> TaskHealth {
         description: TaskDefinition::peek_description(&source),
     };
 
-    let definition = match TaskDefinition::parse(&source) {
+    let mut definition = match TaskDefinition::parse(&source) {
         Ok(definition) => definition,
         Err(error) => return broken(error.to_string()),
     };
+
+    // A working directory that isn't there would fail at fire time, so it is
+    // caught here like any other unusable definition.
+    if let Some(cwd) = &definition.cwd {
+        let candidate = Path::new(cwd);
+        // "Relative to the Project root" is the whole contract; an absolute
+        // path or a `..` climb would put the Agent somewhere the Project does
+        // not own.
+        if candidate.is_absolute()
+            || candidate
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return broken(format!(
+                "working directory {cwd:?} must be relative to the project and stay inside it"
+            ));
+        }
+        if !project_dir.join(candidate).is_dir() {
+            return broken(format!(
+                "working directory {cwd:?} does not exist under the project"
+            ));
+        }
+    }
 
     let agent = match config.resolve_agent(definition.agent.as_deref()) {
         Ok(agent) => agent,
@@ -130,10 +153,24 @@ fn assess(path: &Path, config: &Config) -> TaskHealth {
 
     // A template that can't be turned into a command would fail at fire time,
     // in the dark. Catch it while someone is looking.
-    if let Some(template) = config.agent(&agent)
-        && let Err(error) = crate::runner::validate_template(&template.cmd)
-    {
-        return broken(error);
+    if let Some(template) = config.agent(&agent) {
+        if let Err(error) = crate::runner::validate_template(&template.cmd) {
+            return broken(error);
+        }
+
+        // A parameter the template has nowhere to put is not fatal — the Run
+        // still works — but it silently does nothing, so say so.
+        let placeholders = crate::runner::template_placeholders(&template.cmd);
+        for (field, value) in [
+            (crate::runner::MODEL, &definition.model),
+            (crate::runner::PERMISSION_MODE, &definition.permission_mode),
+        ] {
+            if value.is_some() && !placeholders.contains(field) {
+                definition.warnings.push(format!(
+                    "`{field}` is set but agent {agent:?} has no {{{field}}} in its command, so it is ignored"
+                ));
+            }
+        }
     }
 
     TaskHealth::Ready {

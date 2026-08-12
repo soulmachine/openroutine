@@ -23,18 +23,7 @@ pub enum TaskError {
 /// Frontmatter keys the v1 schema defines but this build does not act on
 /// yet. Warned about specifically: telling someone their `disabled: true` is
 /// an "unknown key" would be a lie, and saying nothing would be worse.
-const NOT_YET_HONOURED: &[&str] = &[
-    "at",
-    "catch_up",
-    "cwd",
-    "disabled",
-    "env",
-    "model",
-    "on_failure",
-    "permission_mode",
-    "timeout",
-    "tz",
-];
+const NOT_YET_HONOURED: &[&str] = &["at", "catch_up", "disabled", "on_failure", "tz"];
 
 /// The frontmatter exactly as written, before validation.
 #[derive(Debug, Deserialize)]
@@ -44,6 +33,13 @@ struct Frontmatter {
     agent: Option<String>,
     /// Accepts `2m`, `30s`, or a bare `0`, so it reads naturally either way.
     jitter: Option<serde_yaml_ng::Value>,
+    /// A duration, or `none` to let the Run take as long as it takes.
+    timeout: Option<serde_yaml_ng::Value>,
+    cwd: Option<String>,
+    model: Option<String>,
+    permission_mode: Option<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     /// Anything this build doesn't act on. Kept rather than dropped so it can
     /// be reported: a key that silently does nothing is the worst outcome.
     #[serde(flatten)]
@@ -57,6 +53,14 @@ pub struct TaskDefinition {
     pub agent: Option<String>,
     /// How far this Task's fire time may be nudged. `None` takes the default.
     pub jitter: Option<chrono::Duration>,
+    /// How long the Run may take. `None` takes the configured default.
+    pub timeout: Option<Timeout>,
+    /// Where the Agent starts, relative to the Project root when relative.
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    /// Environment for this Task, layered over the config's own.
+    pub env: BTreeMap<String, String>,
     pub prompt: String,
     /// Non-fatal complaints about the definition. A warned Task still runs.
     pub warnings: Vec<String>,
@@ -98,11 +102,24 @@ impl TaskDefinition {
                 None => None,
             };
 
+        let timeout =
+            match parsed.timeout {
+                Some(value) => Some(parse_timeout(&value).map_err(|reason| {
+                    TaskError::InvalidFrontmatter(format!("`timeout`: {reason}"))
+                })?),
+                None => None,
+            };
+
         Ok(Self {
             description,
             schedule: Schedule::parse(&cron)?,
             agent: parsed.agent,
             jitter,
+            timeout,
+            cwd: parsed.cwd,
+            model: parsed.model,
+            permission_mode: parsed.permission_mode,
+            env: parsed.env,
             prompt: body.trim().to_string(),
             warnings,
         })
@@ -146,6 +163,21 @@ fn split_frontmatter(source: &str) -> Result<(&str, &str), TaskError> {
     Err(TaskError::UnterminatedFrontmatter)
 }
 
+/// How long a Run may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timeout {
+    After(chrono::Duration),
+    /// Explicitly unbounded — the author opted out.
+    Never,
+}
+
+fn parse_timeout(value: &serde_yaml_ng::Value) -> Result<Timeout, String> {
+    if value.as_str().is_some_and(|text| text.trim() == "none") {
+        return Ok(Timeout::Never);
+    }
+    parse_duration_value(value).map(Timeout::After)
+}
+
 /// A duration as frontmatter writes it: `30s`, `5m`, `2h`, `1d`, or a bare
 /// number of seconds (so `jitter: 0` reads naturally).
 fn parse_duration_value(value: &serde_yaml_ng::Value) -> Result<chrono::Duration, String> {
@@ -172,17 +204,22 @@ pub fn parse_duration(text: &str) -> Result<chrono::Duration, String> {
         .parse()
         .map_err(|_| format!("{text:?} is not a duration like `5m`"))?;
 
+    // The fallible constructors matter: frontmatter is committer-supplied,
+    // and the panicking ones would take the whole Daemon down rather than
+    // marking one Task Broken.
     let duration = match unit.trim() {
-        "" | "s" => chrono::Duration::seconds(amount),
-        "m" => chrono::Duration::minutes(amount),
-        "h" => chrono::Duration::hours(amount),
-        "d" => chrono::Duration::days(amount),
+        "" | "s" => chrono::Duration::try_seconds(amount),
+        "m" => chrono::Duration::try_minutes(amount),
+        "h" => chrono::Duration::try_hours(amount),
+        "d" => chrono::Duration::try_days(amount),
         other => {
             return Err(format!(
                 "unknown duration unit {other:?}; use s, m, h, or d"
             ));
         }
-    };
+    }
+    .ok_or_else(|| format!("{text:?} is out of range"))?;
+
     non_negative(duration)
 }
 
