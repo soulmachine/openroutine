@@ -1,57 +1,61 @@
-# Putting openroutine.dev live
+# Deploying openroutine.dev
 
-One-time setup. After this, pushing to the `site` branch is the deploy.
+## Current state
 
-The zone is already on Cloudflare nameservers (`bob/kim.ns.cloudflare.com`) with **no A or
-CNAME records** — that is the right starting state. Do not hand-create records for
-`openroutine.dev` or `www` before step 3; a Custom Domain cannot be attached over an existing
-CNAME.
+**The site is live at <https://openroutine.dev>**, deployed as the Worker `openroutine-site`
+(Workers Static Assets). The apex domain and its certificate were attached automatically by the
+`custom_domain` route in `wrangler.toml`.
 
-## 1. Connect the repo to Workers Builds
+Deploys are **manual** right now:
 
-Dashboard only — there is no CLI path for connecting a git repo.
-
-1. **Workers & Pages → Create → Import a repository.**
-2. Authorize the Cloudflare GitHub App for **`soulmachine/openroutine`**.
-3. Pick the repo, and set the branch to **`site`**.
-4. Name the Worker **`openroutine-site`**.
-   ⚠️ This must match `name` in `wrangler.toml` exactly, or the build fails.
-
-## 2. Build settings
-
-| Setting | Value |
-| :-- | :-- |
-| Root directory | `/` |
-| Build command | **leave empty** |
-| Deploy command | `npx wrangler deploy` |
-
-There is no build step: `public/` is already the finished site.
-
-Then, under **Settings → Build → Branch control**:
-
-- **Production branch: `site`**
-- **Turn OFF "Builds for non-production branches."**
-
-That last one matters. `main` holds the Rust project and has no `wrangler.toml`, so leaving
-non-production builds on means every code commit kicks off a build that fails and emails you.
-
-## 3. The apex domain attaches itself
-
-`wrangler.toml` already declares it:
-
-```toml
-[[routes]]
-pattern = "openroutine.dev"
-custom_domain = true
+```bash
+npx wrangler deploy      # from this branch's root
 ```
 
-On the first successful deploy, Cloudflare creates the DNS record and issues the certificate.
-Nothing to do by hand. Certificate issuance can lag a few minutes — retry before assuming it
-is broken.
+Two things are still unconfigured, both dashboard-only. Neither is required for the site to
+work; the first removes the manual step, the second makes `www` resolve.
 
-## 4. Redirect www to the apex
+- [ ] Workers Builds — auto-deploy on push to `site`
+- [ ] `www.openroutine.dev` → 301 to the apex
 
-This cannot go in `public/_redirects` — Cloudflare's redirects file does not support
+> Wrangler's OAuth token carries `zone (read)` but no DNS or Ruleset write scope, so the `www`
+> steps cannot be scripted with it. They need the dashboard, or an API token created with
+> DNS-edit and Rules-edit permissions.
+
+---
+
+## A. Auto-deploy on push (optional)
+
+Removes the manual `wrangler deploy`. Dashboard only — there is no CLI path for connecting a
+git repo.
+
+1. **Workers & Pages → `openroutine-site` → Settings → Builds → Connect.**
+2. Authorize the Cloudflare GitHub App for **`soulmachine/openroutine`**, and pick the repo.
+3. Build settings:
+
+   | Setting | Value |
+   | :-- | :-- |
+   | Root directory | `/` |
+   | Build command | **leave empty** |
+   | Deploy command | `npx wrangler deploy` |
+
+   There is no build step — `public/` is already the finished site.
+
+4. **Branch control → production branch: `site`.**
+5. **Turn OFF "Builds for non-production branches."**
+
+Step 5 matters: `main` holds the Rust project and has no `wrangler.toml`, so leaving
+non-production builds on means every code commit starts a build that fails and emails you.
+
+The Worker name in the dashboard must stay `openroutine-site` — it has to match `name` in
+`wrangler.toml` or the build fails.
+
+Afterwards, confirm it rather than assuming: make a trivial edit on `site`, push, and watch it
+go live without running anything.
+
+## B. Redirect www to the apex
+
+This cannot live in `public/_redirects` — Cloudflare's redirects file does not support
 domain-level redirects. It is a zone rule instead.
 
 1. **DNS → Add record**: type `AAAA`, name `www`, address `100::`, **Proxied (orange cloud)**.
@@ -60,28 +64,35 @@ domain-level redirects. It is a zone rule instead.
 2. **Rules → Redirect Rules → Create rule.** Use the built-in *Redirect from WWW to Root*
    template, or set it manually:
    - **When:** `http.host eq "www.openroutine.dev"`
-   - **Then:** dynamic redirect to
-     `concat("https://openroutine.dev", http.request.uri.path)`
+   - **Then:** dynamic redirect to `concat("https://openroutine.dev", http.request.uri.path)`
    - **Status:** 301, preserve query string
 
 The free plan allows 10 single redirects; this uses one.
 
-## 5. Verify
+Do **not** attach `www` as a second Custom Domain on the Worker instead — that would serve the
+site on both hostnames rather than redirecting. The pages already carry
+`<link rel="canonical">` pointing at the apex, so it would not be an SEO disaster, but it is not
+what was asked for.
+
+---
+
+## Verifying
 
 ```bash
-dig +short A openroutine.dev              # Cloudflare addresses
-curl -sI https://openroutine.dev          # 200
-curl -sI https://openroutine.dev/docs     # 200
-curl -sI https://openroutine.dev/docs.html # 307 -> /docs
-curl -sI https://www.openroutine.dev      # 301 -> https://openroutine.dev
-curl -sI https://openroutine.dev/nope     # 404, serving 404.html
+dig +short A openroutine.dev               # Cloudflare addresses
+curl -s -o /dev/null -w '%{http_code}\n' https://openroutine.dev          # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://openroutine.dev/docs     # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://openroutine.dev/docs.html # 307 -> /docs
+curl -s -o /dev/null -w '%{http_code}\n' https://openroutine.dev/nope     # 404
+curl -s -o /dev/null -w '%{http_code}\n' https://www.openroutine.dev      # 301, once B is done
 ```
 
-Then confirm auto-deploy actually works, rather than assuming it: make a trivial edit on the
-`site` branch, push, and watch the change go live without running anything.
+Use `-o /dev/null -w '%{http_code}'` (a GET) rather than `curl -I` (a HEAD). Cloudflare's edge
+answers HEAD inconsistently on freshly deployed assets, which reads as a broken site when it is
+not.
 
-Finally, check the social card at <https://cards-dev.twitter.com/validator> or by pasting the
-URL into any chat client — `public/og.png` should render.
+Expect a minute or two of intermittent 500s immediately after a deploy while the new version
+propagates across the edge. Sample a dozen requests before concluding anything is wrong.
 
 ## Why Workers and not Pages
 
