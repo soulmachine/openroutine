@@ -36,12 +36,18 @@ impl AgentCall {
 
 pub struct TestEnv {
     root: TempDir,
+    /// Every sandbox gets its own API port, so daemons in parallel tests
+    /// never collide over the default one.
+    port: u16,
 }
 
 impl TestEnv {
     pub fn new() -> Self {
         let root = TempDir::new().expect("temp root");
-        let env = Self { root };
+        let env = Self {
+            root,
+            port: free_port(),
+        };
         fs::create_dir_all(env.project_dir()).unwrap();
         fs::create_dir_all(env.state_dir()).unwrap();
         fs::create_dir_all(env.record_dir()).unwrap();
@@ -216,13 +222,15 @@ done
 
     fn write_config_toml(&self, cmd: &str, preamble: &str) -> PathBuf {
         let config = format!(
-            "{preamble}\
+            "bind = \"127.0.0.1:{port}\"\n\
+             {preamble}\
              [[projects]]\n\
              path = {project:?}\n\
              name = \"proj\"\n\
              \n\
              [agents.stub]\n\
              cmd = {cmd:?}\n",
+            port = self.port,
             project = self.project_dir().display().to_string(),
             cmd = cmd,
         );
@@ -242,9 +250,11 @@ done
     pub fn write_config_with_projects(&self) -> PathBuf {
         let other = self.add_project("other");
         let config = format!(
-            "[[projects]]\npath = {proj:?}\nname = \"proj\"\n\n\
+            "bind = \"127.0.0.1:{port}\"\n\
+             [[projects]]\npath = {proj:?}\nname = \"proj\"\n\n\
              [[projects]]\npath = {other:?}\nname = \"other\"\n\n\
              [agents.stub]\ncmd = {cmd:?}\n",
+            port = self.port,
             proj = self.project_dir().display().to_string(),
             other = other.display().to_string(),
             cmd = format!("{} --run {{prompt}}", self.stub_path().display()),
@@ -253,10 +263,28 @@ done
         self.config_path()
     }
 
+    /// The port this sandbox's API listens on.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// A config whose API listens on this sandbox's own port.
+    pub fn write_config_with_api(&self) -> u16 {
+        self.write_config();
+        self.port
+    }
+
+    /// The API token the daemon will use, created up front so a test can
+    /// authenticate without racing the daemon's own first write.
+    pub fn api_token(&self) -> String {
+        openroutine::token::load_or_create(&self.state_dir()).unwrap()
+    }
+
     /// A config with agents but no Projects registered yet.
     pub fn write_config_with_no_projects(&self) -> PathBuf {
         let config = format!(
-            "[agents.stub]\ncmd = {cmd:?}\n",
+            "bind = \"127.0.0.1:{port}\"\n[agents.stub]\ncmd = {cmd:?}\n",
+            port = self.port,
             cmd = format!("{} --run {{prompt}}", self.stub_path().display()),
         );
         fs::write(self.config_path(), config).unwrap();
@@ -266,8 +294,10 @@ done
     /// The standard config with an extra key inside the Project entry.
     pub fn write_config_with_extra_project_key(&self, extra: &str) -> PathBuf {
         let config = format!(
-            "[[projects]]\npath = {proj:?}\nname = \"proj\"\n{extra}\n\
+            "bind = \"127.0.0.1:{port}\"\n\
+             [[projects]]\npath = {proj:?}\nname = \"proj\"\n{extra}\n\
              [agents.stub]\ncmd = {cmd:?}\n",
+            port = self.port,
             proj = self.project_dir().display().to_string(),
             extra = extra,
             cmd = format!("{} --run {{prompt}}", self.stub_path().display()),
@@ -309,6 +339,9 @@ done
 
         records
             .into_iter()
+            // A record being written right now is not yet a call: the stub
+            // writes its files one at a time, and a poll can land between.
+            .filter(|args_path| args_path.with_extension("cwd").exists())
             .map(|args_path| {
                 let stem = args_path.with_extension("");
                 let raw = fs::read(&args_path).unwrap();
@@ -322,11 +355,11 @@ done
                     args,
                     cwd: PathBuf::from(
                         fs::read_to_string(stem.with_extension("cwd"))
-                            .unwrap()
+                            .unwrap_or_default()
                             .trim()
                             .to_string(),
                     ),
-                    stdin: fs::read_to_string(stem.with_extension("stdin")).unwrap(),
+                    stdin: fs::read_to_string(stem.with_extension("stdin")).unwrap_or_default(),
                     env: fs::read_to_string(stem.with_extension("env"))
                         .unwrap_or_default()
                         .lines()
@@ -407,4 +440,10 @@ fn make_executable(path: &Path) {
     let mut perms = fs::metadata(path).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(path, perms).unwrap();
+}
+
+/// A port the operating system says is free right now.
+pub fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
 }

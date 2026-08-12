@@ -41,6 +41,10 @@ pub struct Config {
     /// The timeout for Tasks that name none.
     #[serde(default)]
     pub default_timeout: Option<String>,
+    /// Where the local API listens. Loopback by default; widening it is
+    /// possible, discouraged, and never removes the token requirement.
+    #[serde(default)]
+    pub bind: Option<String>,
     /// The Agent for Tasks that name none. Unset by default, so an omitted
     /// `agent:` is Broken until the user opts in.
     #[serde(default)]
@@ -154,6 +158,13 @@ impl Config {
                 .map_err(|reason| anyhow::anyhow!("`default_timeout`: {reason}")),
             None => Ok(crate::task::Timeout::After(DEFAULT_TIMEOUT)),
         }
+    }
+
+    /// The address the API listens on.
+    pub fn bind(&self) -> String {
+        self.bind
+            .clone()
+            .unwrap_or_else(|| format!("127.0.0.1:{}", crate::api::DEFAULT_PORT))
     }
 
     pub fn agent(&self, name: &str) -> Option<&AgentConfig> {

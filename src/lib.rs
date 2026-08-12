@@ -5,12 +5,14 @@
 //! **Project**; a due **Tick** becomes exactly one **Run** or one **Skip**;
 //! an **Agent** is a command template.
 
+pub mod api;
 pub mod clock;
 pub mod config;
 pub mod crontab;
 pub mod daemon;
 pub mod digest;
 pub mod discovery;
+pub mod fire;
 pub mod jitter;
 pub mod list;
 pub mod lock;
@@ -21,4 +23,5 @@ pub mod schedule;
 pub mod service;
 pub mod state;
 pub mod task;
+pub mod token;
 pub mod zone;

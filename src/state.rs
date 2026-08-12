@@ -176,6 +176,11 @@ impl State {
         self.task(id).and_then(|task| task.last_scheduled_for)
     }
 
+    /// When this Task last started a Run.
+    pub fn last_run_at(&self, id: &str) -> Option<DateTime<Utc>> {
+        self.task(id).and_then(|task| task.last_run_at)
+    }
+
     /// The most recent Tick this Task answered, by Run or by Skip.
     pub fn last_tick_at(&self, id: &str) -> Option<DateTime<Utc>> {
         self.task(id).and_then(|task| task.last_tick_at)

@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use openroutine::clock::{Clock, SystemClock};
 use openroutine::config::{self, Config};
 use openroutine::daemon::Daemon;
+use std::future::IntoFuture;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
@@ -77,6 +78,12 @@ enum Command {
     },
     /// Unregister the daemon. Config, state, and Tasks are left alone.
     Uninstall,
+    /// Print the API token, or replace it.
+    Token {
+        /// Replace the token. Anything using the old one stops working.
+        #[arg(long)]
+        rotate: bool,
+    },
     /// Work out what a Task would do.
     Run {
         task: String,
@@ -149,6 +156,7 @@ async fn main() -> Result<()> {
         Command::Run { task, dry_run } => run(&config_path, &task, dry_run),
         Command::Install { print } => install(&config_path, print),
         Command::Uninstall => uninstall(&config_path),
+        Command::Token { rotate } => token(&config_path, rotate),
     }
 }
 
@@ -520,6 +528,18 @@ fn resolve<'a>(
     }
 }
 
+/// Shows the API token, or replaces it.
+fn token(config_path: &std::path::Path, rotate: bool) -> Result<()> {
+    let state_dir = Config::load(config_path)?.state_dir()?;
+    let token = if rotate {
+        openroutine::token::create(&state_dir)?
+    } else {
+        openroutine::token::load_or_create(&state_dir)?
+    };
+    println!("{token}");
+    Ok(())
+}
+
 /// Registers the daemon so it comes back by itself.
 fn install(config_path: &std::path::Path, print: bool) -> Result<()> {
     let definition = service_definition(config_path)?;
@@ -602,35 +622,64 @@ async fn serve(config_path: &std::path::Path) -> Result<()> {
         "openroutine serving"
     );
 
+    let state_dir = daemon.state_dir().clone();
+    let bind = config_bind(config_path);
+    let project_dirs = daemon.project_dirs();
+    let daemon = std::sync::Arc::new(tokio::sync::Mutex::new(daemon));
+    let api_token = openroutine::token::load_or_create(&state_dir)?;
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .with_context(|| format!("listening on {bind}"))?;
+    tracing::info!(%bind, "api listening");
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            openroutine::api::router(openroutine::api::Api {
+                daemon: std::sync::Arc::clone(&daemon),
+                token: api_token,
+            }),
+        )
+        .into_future(),
+    );
+
     let mut ticker = tokio::time::interval(TICK_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut rescan = tokio::time::interval(RESCAN_INTERVAL);
     rescan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     rescan.tick().await; // the first tick is immediate; we just scanned
 
-    let mut changes = watch_projects(daemon.project_dirs());
+    let mut changes = watch_projects(project_dirs);
 
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                if let Err(error) = daemon.tick().await {
+                if let Err(error) = daemon.lock().await.tick().await {
                     tracing::error!("tick failed: {error:#}");
                 }
             }
-            _ = rescan.tick() => reload(&mut daemon).await,
+            _ = rescan.tick() => reload(&mut *daemon.lock().await).await,
             Some(()) = changes.recv() => {
                 // Let the rest of the burst arrive, then take everything at
                 // once — and drain, so a checkout is one reload, not fifty.
                 tokio::time::sleep(SETTLE).await;
                 while changes.try_recv().is_ok() {}
-                reload(&mut daemon).await;
+                reload(&mut *daemon.lock().await).await;
             }
             signal = shutdown.recv() => {
-                tracing::info!(signal, in_flight = daemon.running_count(), "shutting down");
+                let in_flight = daemon.lock().await.running_count();
+                tracing::info!(signal, in_flight, "shutting down");
+                server.abort();
                 return Ok(());
             }
         }
     }
+}
+
+/// Where the API should listen, according to the config.
+fn config_bind(config_path: &std::path::Path) -> String {
+    Config::load(config_path)
+        .map(|config| config.bind())
+        .unwrap_or_else(|_| format!("127.0.0.1:{}", openroutine::api::DEFAULT_PORT))
 }
 
 /// Rescans, keeping the Daemon alive if a scan fails — a bad moment on disk

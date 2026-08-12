@@ -42,6 +42,23 @@ struct Scheduled {
     pending: Option<Pending>,
 }
 
+/// What happened when a Fire was asked for.
+#[derive(Debug, Clone)]
+pub enum FireOutcome {
+    Started(String),
+    AlreadyRunning,
+    NoSuchTask,
+    Failed(String),
+}
+
+/// A scheduled Task as seen from outside.
+#[derive(Debug, Clone)]
+pub struct ScheduledSummary {
+    pub id: String,
+    pub next_tick: Option<DateTime<Utc>>,
+    pub next_fire_at: Option<DateTime<Utc>>,
+}
+
 /// A Tick that has not happened yet, and the moment it will actually fire.
 /// The two always travel together: a Tick without its jittered fire time is
 /// not a state the scheduler can be in.
@@ -478,9 +495,9 @@ impl Daemon {
                 continue;
             }
 
-            match self.start_run(index, Some(tick)) {
+            match self.start_run(index, Some(tick), None) {
                 // `start_run` saves state itself once the Agent is away.
-                Ok(()) => answered_any = false,
+                Ok(_) => answered_any = false,
                 Err(error) => tracing::error!(task = %id, "run failed to start: {error:#}"),
             }
         }
@@ -560,6 +577,51 @@ impl Daemon {
         }
     }
 
+    /// Starts a Run now, outside the schedule.
+    ///
+    /// A Task never runs concurrently with itself, so a Fire arriving while
+    /// one is going is refused with the Run already in flight rather than
+    /// quietly queued.
+    pub fn fire(&mut self, task_id: &str, context: Option<&str>) -> FireOutcome {
+        self.running.retain(|_, handle| !handle.is_finished());
+
+        let Some(index) = self.scheduled.iter().position(|entry| entry.id == task_id) else {
+            return FireOutcome::NoSuchTask;
+        };
+        if self.running.contains_key(task_id) {
+            return FireOutcome::AlreadyRunning;
+        }
+
+        match self.start_run(index, None, context) {
+            Ok(run_id) => FireOutcome::Started(run_id),
+            Err(error) => FireOutcome::Failed(format!("{error:#}")),
+        }
+    }
+
+    /// Whether this Task has a Run in flight.
+    pub fn is_running(&self, task_id: &str) -> bool {
+        self.running
+            .get(task_id)
+            .is_some_and(|handle| !handle.is_finished())
+    }
+
+    /// Every Task currently scheduled, with what it is waiting for.
+    pub fn scheduled_tasks(&self) -> Vec<ScheduledSummary> {
+        self.scheduled
+            .iter()
+            .map(|entry| ScheduledSummary {
+                id: entry.id.clone(),
+                next_tick: entry.pending.map(|pending| pending.tick),
+                next_fire_at: entry.pending.map(|pending| pending.fire_at),
+            })
+            .collect()
+    }
+
+    /// The run state as the Daemon currently holds it.
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
     /// Awaits every in-flight Run.
     pub async fn wait_for_running(&mut self) {
         for (_, handle) in std::mem::take(&mut self.running) {
@@ -570,11 +632,19 @@ impl Daemon {
     /// Starts one Run: records it as running, spawns the Agent under a login
     /// shell, and hands the waiting to a background task so the scheduler
     /// stays responsive.
-    fn start_run(&mut self, index: usize, scheduled_for: Option<DateTime<Utc>>) -> Result<()> {
+    fn start_run(
+        &mut self,
+        index: usize,
+        scheduled_for: Option<DateTime<Utc>>,
+        context: Option<&str>,
+    ) -> Result<String> {
         let task = &self.scheduled[index];
         let task_id = task.id.clone();
         let digest = task.digest.clone();
-        let prompt = task.definition.prompt.clone();
+        let prompt = match context {
+            Some(text) => crate::fire::with_context(&task.definition.prompt, text),
+            None => task.definition.prompt.clone(),
+        };
         let working_dir = task.working_dir();
 
         // The Agent was resolved and checked when the Task was scanned; a
@@ -604,12 +674,17 @@ impl Daemon {
         let started_at = self.clock.now();
         let (run_id, run_dir) = run::create_run_dir(&self.state_dir, &task_id, started_at)?;
 
+        let announced_id = run_id.clone();
         let mut record = RunRecord {
             run_id,
             task_id: task_id.clone(),
             status: RunStatus::Running,
             exit_code: None,
-            trigger: Trigger::Schedule,
+            trigger: if scheduled_for.is_some() {
+                Trigger::Schedule
+            } else {
+                Trigger::Fire
+            },
             agent: agent_name,
             scheduled_for,
             started_at,
@@ -726,7 +801,7 @@ impl Daemon {
         });
         self.running.insert(task_id, handle);
 
-        Ok(())
+        Ok(announced_id)
     }
 }
 

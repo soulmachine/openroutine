@@ -261,3 +261,32 @@ fn walk_run_records(root: &Path) -> Vec<PathBuf> {
     }
     found
 }
+
+/// Every recorded Run of a Task, oldest first.
+pub fn read_history(state_dir: &Path, task_id: &str) -> Vec<RunRecord> {
+    let dir = task_runs_dir(state_dir, task_id);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    runs.sort();
+
+    runs.iter()
+        .filter_map(|run| {
+            let raw = std::fs::read_to_string(run.join(RUN_RECORD)).ok()?;
+            serde_json::from_str(&raw).ok()
+        })
+        .collect()
+}
+
+/// One Run's record, if it is there.
+pub fn read_record(state_dir: &Path, task_id: &str, run_id: &str) -> Option<RunRecord> {
+    let path = task_runs_dir(state_dir, task_id)
+        .join(run_id)
+        .join(RUN_RECORD);
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
