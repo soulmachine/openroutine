@@ -29,6 +29,65 @@ Read `CONTEXT.md` for the vocabulary before writing prose or naming anything, an
 `.scratch/openroutine-v1/spec.md` is the full design; `docs/adr/` holds the two architectural
 decisions.
 
+## After installing a new binary: verify the Messages permission, don't assume it
+
+**Every time you replace the installed binary — `cargo install --path . --force` — check that
+openroutine can still drive Messages, while the user is at the keyboard.** Tasks on this machine
+send iMessages through `osascript`, and a lost grant means the last step of an unattended Run
+hangs or is denied at whatever hour it fires, with nobody there to click anything.
+
+Two facts decide whether a rebuild costs you the grant, and they pull in opposite directions:
+
+- TCC attributes an Apple Event to the **responsible process** — for a scheduled Run that is
+  `openroutine` (launchd → openroutine → agent → osascript), not your shell. So approving from a
+  terminal grants the wrong client and proves nothing. A test has to go *through* openroutine.
+- Whether the grant survives depends on the entry's **client type**. A **path-based** row
+  (`client_type = 1`) authorises on the executable's path, so replacing the binary at the same
+  path keeps working even though its code hash changed. A bundle/hash-pinned row is invalidated
+  by any rebuild.
+
+On this machine the row is path-based, so **rebuilds have survived it** — verified after the
+1.0.0 install: the stored `csreq` still pinned the 0.2.0 cdhash, the new binary hashed
+differently, and the Apple Event succeeded anyway with the TCC row untouched. Do not generalise
+that to a freshly user-approved grant, which macOS will likely pin to the code hash instead.
+
+Check it, rather than reasoning about it:
+
+```bash
+sqlite3 -header ~/Library/Application\ Support/com.apple.TCC/TCC.db \
+  "select auth_value, client_type, hex(csreq) from access
+     where client like '%openroutine%' and service='kTCCServiceAppleEvents';"
+codesign -d -r- ~/.cargo/bin/openroutine 2>&1 | grep -oE 'H"[0-9a-f]+"'
+```
+
+`auth_value = 2` is granted; `client_type = 1` is path-based. A `csreq` that does not contain the
+current cdhash only matters if the row is *not* path-based.
+
+The definitive test is an actual Apple Event through openroutine — cheap, no agent invocation, no
+API spend, via a probe task whose "agent" is osascript itself:
+
+```toml
+# config.toml, temporarily
+[agents.osascript]
+cmd = "/usr/bin/osascript -e {prompt}"
+```
+
+```markdown
+---
+name: tcc probe
+description: Trigger the Messages consent dialog through openroutine
+agent: osascript
+---
+
+tell application "Messages" to get name
+```
+
+`openroutine add tcc-probe.md && openroutine run tcc-probe` fires it. Exit 0 with `Messages` in
+the log means the grant holds; a dialog means it did not, so have the user approve it. Then
+`openroutine remove tcc-probe` and drop the agent block. Firing the real task is a poor
+substitute: it costs an agent run, sends a real message, and — as happened on 2026-08-12 — an
+empty hour never reaches its messaging step at all, leaving the grant untested.
+
 ## Testing
 
 Two seams, and no others: the **process boundary** (integration tests spawn the real binary in
