@@ -166,7 +166,7 @@ One binary, one process, zero databases. The daemon is the scheduler, the API, a
 - **Durability**: flock single-instance; atomic temp-file+rename state writes; corrupt state renamed aside and regenerated loudly; retention keep-last-50 per task; `output.log` capped with a truncation marker; daemon's own diagnostics to a log file in the state dir + stderr.
 - **Trust model**: registering a file trusts whoever can edit it — new and changed Tasks always auto-schedule at Reload and are always loudly flagged; no approval gate.
 - **Stack**: async single binary on tokio; axum-class HTTP; DST-correct cron crate; serde; MSRV recent stable; permissive-license deps only. (The notify/ignore watching-and-walking crates left with discovery.)
-- **Milestones**: v0.1 core daemon + CLI → v0.2 REST API + install → v0.3 web UI → the file-registration redesign, released as **1.0.0** (DECISIONS Q93). The gate this bullet set — nothing called 1.0 until all three exist and are stable — is met. From 1.0 the frontmatter schema, CLI, REST API, and on-disk layout are a stable surface; breaking any of them waits for 2.0.
+- **Milestones**: v0.1 core daemon + CLI → v0.2 REST API + install → v0.3 web UI → the file-registration redesign, released as **1.0.0** (DECISIONS Q93). The gate this bullet set — nothing called 1.0 until all three exist and are stable — is met. 1.0 marks the design settling, not a frozen surface: the frontmatter schema, CLI, REST API, and on-disk layout are documented and meant to last, but while the installed base is essentially nil a bad name is fixed rather than carried to 2.0 (DECISIONS Q95). Breaking changes get a release note and a journal entry.
 
 ## Testing Decisions
 

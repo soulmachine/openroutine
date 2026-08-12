@@ -95,9 +95,6 @@ enum Command {
         all: bool,
     },
     /// Open the local web UI in a browser.
-    // `open` was this command's name through 0.2 and 1.0.0; kept as an alias
-    // so the rename costs nobody their muscle memory or their scripts.
-    #[command(alias = "open")]
     Dashboard,
     /// Print the API token, or replace it.
     Token {

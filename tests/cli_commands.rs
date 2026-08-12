@@ -419,22 +419,28 @@ fn an_agent_that_is_installed_says_nothing() {
 }
 
 #[test]
-fn the_dashboard_command_still_answers_to_its_old_name() {
+fn the_dashboard_command_replaced_open_outright() {
     let env = TestEnv::new();
     env.write_config_with_no_tasks();
 
     // `--help` rather than the command itself: firing it would launch a
     // browser, and what is under test is name resolution, not the browser.
-    for spelling in ["dashboard", "open"] {
-        let output = env.run(&[spelling, "--help"]);
-        assert!(
-            output.status.success(),
-            "{spelling:?} should resolve: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("web UI"),
-            "and reach the dashboard command, for {spelling:?}"
-        );
-    }
+    let renamed = env.run(&["dashboard", "--help"]);
+    assert!(
+        renamed.status.success(),
+        "`dashboard` should resolve: {}",
+        String::from_utf8_lossy(&renamed.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&renamed.stdout).contains("web UI"),
+        "and reach the right command"
+    );
+
+    // No alias: the old name is gone rather than quietly still working.
+    let gone = env.run(&["open", "--help"]);
+    assert!(!gone.status.success(), "`open` should no longer resolve");
+    assert!(
+        String::from_utf8_lossy(&gone.stderr).contains("unrecognized subcommand"),
+        "and say so plainly"
+    );
 }

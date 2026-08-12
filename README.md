@@ -212,9 +212,14 @@ by directory, so a `[[projects]]` config no longer loads — register each file
 with `openroutine add <file.md>`. Task files now need a `name:`, their id is
 derived from it, and `timeout:` is gone: a run is bounded by silence
 (`idle_timeout` in config, 15m) rather than by total runtime. Run history from
-before the change is orphaned rather than migrated. From here the frontmatter
-schema, the CLI, the REST API, and the on-disk layout are a stable surface;
-anything that breaks them waits for 2.0.
+before the change is orphaned rather than migrated.
+
+**1.0 means the design has settled, not that the surface is frozen.** The
+frontmatter schema, the CLI, the REST API, and the on-disk layout are all
+documented and meant to last — but while the project has essentially no
+installed base, a bad name is worth fixing rather than carrying to 2.0.
+Breaking changes get a release note and a line in `DECISIONS.md`; they do not
+get a version-number promise they would only strain against.
 
 Known limits, all deliberate: no GitHub-event triggers and no notifications
 (the fire endpoint is the integration point); state is written atomically
