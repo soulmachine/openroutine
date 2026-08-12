@@ -6,16 +6,11 @@
 (Workers Static Assets). The apex domain and its certificate were attached automatically by the
 `custom_domain` route in `wrangler.toml`.
 
-Deploys are **manual** right now:
+Deploys are **automatic**: Workers Builds is connected to `soulmachine/openroutine`, and a push
+to `main` that touches `site/` deploys the site. Nothing is needed by hand. The manual path
+still works if you want it — `cd site && npx wrangler deploy`.
 
-```bash
-cd site && npx wrangler deploy
-```
-
-Two things are still unconfigured, both dashboard-only. Neither is required for the site to
-work; the first removes the manual step, the second makes `www` resolve.
-
-- [ ] Workers Builds — auto-deploy on push to `main`
+- [x] Workers Builds — auto-deploy on push to `main`
 - [ ] `www.openroutine.dev` → 301 to the apex
 
 > Wrangler's OAuth token carries `zone (read)` but no DNS or Ruleset write scope, so the `www`
@@ -24,40 +19,42 @@ work; the first removes the manual step, the second makes `www` resolve.
 
 ---
 
-## A. Auto-deploy on push (optional)
+## A. Auto-deploy on push — done
 
-Removes the manual `wrangler deploy`. Dashboard only — there is no CLI path for connecting a
-git repo.
+Connected under **Workers & Pages → `openroutine-site` → Settings → Build**. Dashboard only;
+there is no CLI or API path for attaching a git repo, because it runs through the GitHub App
+install flow. This is the configuration of record:
 
-1. **Workers & Pages → `openroutine-site` → Settings → Builds → Connect.**
-2. Authorize the Cloudflare GitHub App for **`soulmachine/openroutine`**, and pick the repo.
-3. Build settings:
+| Setting | Value |
+| :-- | :-- |
+| Git repository | `soulmachine/openroutine` |
+| Root directory | `site` |
+| Build command | *(none)* |
+| Deploy command | `npx wrangler deploy` |
+| Version command | `npx wrangler versions upload` |
+| Production branch | `main` |
+| Builds for non-production branches | **on** |
+| Build watch paths → include | `site/*` |
 
-   | Setting | Value |
-   | :-- | :-- |
-   | Root directory | `site/` |
-   | Build command | **leave empty** |
-   | Deploy command | `npx wrangler deploy` |
+There is no build step — `public/` is already the finished site. The root directory is what
+makes `wrangler.toml` findable; without it the deploy runs at the repo root and fails.
 
-   There is no build step — `public/` is already the finished site. The root directory is what
-   makes `wrangler.toml` findable; without it the deploy runs at the repo root and fails.
+The watch path is what makes a shared repo work. Include paths default to `*`, so without it
+every Rust commit starts a build; with `site/*`, a commit touching no path under `site/` is
+skipped before a build is queued. That is also why *builds for non-production branches* can stay
+on: a PR touching `site/` gets a preview via `npx wrangler versions upload` without promoting
+it, and code-only branches stay quiet.
 
-4. **Branch control → production branch: `main`.**
-5. **Settings → Build → Build watch paths → include `site/*`.**
-
-Step 5 is what makes a shared repo work. Include paths default to `[*]`, so without it every
-Rust commit starts a build; with it, a commit that touches no path under `site/` is skipped
-before a build is ever queued.
-
-Leave *builds for non-production branches* **on**. A PR touching `site/` then gets a preview
-via `npx wrangler versions upload` without promoting it, and the watch path keeps code-only
-branches quiet — the reason that toggle used to be off is gone.
+Cloudflare mints its own API token for this (`Workers Builds - <timestamp>`, visible under
+Settings → Build → API token). It is not the wrangler OAuth session and not the token that was
+revoked earlier; leave it alone.
 
 The Worker name in the dashboard must stay `openroutine-site` — it has to match `name` in
 `wrangler.toml` or the build fails.
 
-Afterwards, confirm it rather than assuming, and confirm both halves: push a trivial edit under
-`site/` and watch it go live, then push a code-only commit and watch no build start.
+Both halves are worth confirming rather than assuming: a push touching `site/` should appear
+under the **Deployments** tab within a minute, and a code-only push should produce no build at
+all.
 
 ## B. Redirect www to the apex
 
