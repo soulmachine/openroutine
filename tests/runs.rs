@@ -57,6 +57,37 @@ async fn the_agent_receives_a_usable_environment() {
     );
 }
 
+/// `list` predicts what a Run will find by sampling the login shell seeded
+/// with a service manager's `PATH`. That prediction is only worth anything
+/// if a Run is seeded the same way — otherwise a Task passes `list` and runs
+/// green under `serve` in a terminal, then fails the first night it runs
+/// installed, which is the whole failure this project exists to prevent.
+#[tokio::test]
+async fn a_run_gets_the_path_the_reachability_check_samples() {
+    let env = TestEnv::new();
+    env.write_task("envy", &task(""));
+    env.write_config();
+
+    let invocation = fire(&env).await;
+
+    // The same question `login_path` asks, asked the same way.
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let sampled = std::process::Command::new(shell)
+        .args(["-l", "-c", "printf %s \"$PATH\""])
+        .env("PATH", openroutine::runner::SERVICE_PATH)
+        .output()
+        .expect("the login shell should answer");
+    let sampled = String::from_utf8_lossy(&sampled.stdout).trim().to_string();
+
+    assert_eq!(
+        invocation.var("PATH"),
+        Some(sampled.as_str()),
+        "the Run's PATH must be the one `program_reach` warns about, not the \
+         caller's — this test process's PATH is {:?}",
+        std::env::var("PATH").unwrap_or_default()
+    );
+}
+
 #[tokio::test]
 async fn config_env_reaches_the_agent() {
     let env = TestEnv::new();

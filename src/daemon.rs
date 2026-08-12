@@ -826,6 +826,14 @@ impl Daemon {
         process
             .args(&command.args)
             .current_dir(&working_dir)
+            // Seed the login shell the way a service manager would, rather
+            // than passing on whatever this process holds. Under launchd the
+            // two are already the same; started by `serve` from a terminal
+            // they are not, and without this a Task would pass `list` and
+            // run green all day in the foreground, then fail the first night
+            // it ran installed. A profile that appends to `PATH` still gets
+            // the last word, and so does a Task's own `env: PATH`.
+            .env("PATH", runner::SERVICE_PATH)
             .stdout(Stdio::from(writer.try_clone()?))
             .stderr(Stdio::from(writer))
             .stdin(if command.prompt_on_stdin {

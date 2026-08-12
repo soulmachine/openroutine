@@ -263,7 +263,13 @@ fn split_tokens(template: &str) -> Result<Vec<String>> {
 /// What a service manager hands a process it starts, and so the baseline a
 /// login profile builds on in the deployed case. launchd sets exactly this;
 /// systemd's default for a user unit is a superset.
-const SERVICE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+///
+/// Every Run is seeded with this rather than with whatever the Daemon
+/// happens to hold, so a Run started by `serve` in a terminal builds the
+/// same `PATH` as one started by launchd — and so [`program_reach`], which
+/// samples with the same seed, is answering about the environment Runs
+/// actually get instead of one it hopes they get.
+pub const SERVICE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// The `PATH` a Run will actually see.
 ///
@@ -272,12 +278,13 @@ const SERVICE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 /// empty, which is the very problem the login shell solves. This asks the
 /// shell once and remembers the answer.
 ///
-/// The shell is asked with `PATH` seeded to what a service manager gives,
-/// never with the caller's own. A profile that appends (`PATH="$PATH:…"`)
-/// would otherwise hand back whatever the caller already had, so `list` run
-/// from a terminal — the only place anyone runs it — would call a program
-/// findable that the Daemon under launchd cannot find, which is precisely
-/// the case this check exists to catch.
+/// The shell is asked with `PATH` seeded to [`SERVICE_PATH`], never with the
+/// caller's own — the same seed a Run is spawned with, so this samples the
+/// real thing rather than modelling it. A profile that appends
+/// (`PATH="$PATH:…"`) would otherwise hand back whatever the caller already
+/// had, so `list` run from a terminal — the only place anyone runs it —
+/// would call a program findable that the Daemon under launchd cannot find,
+/// which is precisely the case this check exists to catch.
 fn login_path() -> Option<&'static str> {
     static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     PATH.get_or_init(|| {

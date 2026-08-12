@@ -377,10 +377,10 @@ fn starter_config(dir: &std::path::Path) -> String {
          # An agent is a command template. {{prompt}} is substituted as a\n\
          # single argument; without it, the prompt arrives on stdin.\n\
          [agents.claude]\n\
-         cmd = \"claude -p {{prompt}}\"\n\
+         cmd = \"claude --dangerously-skip-permissions --effort xhigh -p {{prompt}}\"\n\
          \n\
          [agents.codex]\n\
-         cmd = \"codex exec {{prompt}}\"\n",
+         cmd = \"codex --yolo -c model_reasoning_effort=xhigh exec {{prompt}}\"\n",
         dir = dir.display().to_string(),
     )
 }
