@@ -20,6 +20,8 @@
 </head>
 <body>
 
+<a class="skip-link" href="#main">Skip to content</a>
+
 <header class="masthead">
   <div class="wrap">
     <a class="wordmark" href="/">
@@ -33,7 +35,7 @@
   </div>
 </header>
 
-<main class="docs">
+<main class="docs" id="main">
 
   <section>
     <div class="wrap">
@@ -129,7 +131,11 @@ Say hello, then stop. This is a sample task — edit or delete it.</code></pre>
       <h3>Frontmatter keys</h3>
       <div class="scroller">
         <table class="keys">
-          <thead><tr><th>Key</th><th>What it does</th></tr></thead>
+          <caption>
+            Frontmatter keys a task file accepts. <code>name</code>, <code>description</code>, and a
+            non-empty body are required; every other key is optional.
+          </caption>
+          <thead><tr><th scope="col">Key</th><th scope="col">What it does</th></tr></thead>
           <tbody>
             <tr><td><code>name</code></td><td>What the task is called, in prose — <code>X timeline domain hunter</code> is fine. Its <strong>id</strong> is derived from it: lowercased, runs of whitespace become single hyphens, anything outside <code>[a-z0-9_-]</code> is dropped, and the ends are trimmed — giving <code>x-timeline-domain-hunter</code>. That id must come out 2–50 characters and contain a letter or digit. Required.</td></tr>
             <tr><td><code>description</code></td><td>What the task is for. Shown in the CLI and the web UI. Required.</td></tr>
@@ -151,9 +157,8 @@ Say hello, then stop. This is a sample task — edit or delete it.</code></pre>
         <code>1d</code>, or a bare number of seconds.
       </p>
       <p class="note">
-        <strong><code>name</code>, <code>description</code>, and a non-empty body are
-        required</strong>; every other key is optional. The body is the prompt — a task with
-        nothing to say to its agent is refused.
+        <strong>The body is the prompt</strong> — a task with nothing to say to its agent is
+        refused.
       </p>
       <p class="note">
         <strong>A task with neither <code>cron</code> nor <code>at</code> is a one-shot</strong> —
@@ -221,7 +226,10 @@ cmd = "codex exec {prompt}"</code></pre>
       <h3>Keys</h3>
       <div class="scroller">
         <table class="keys">
-          <thead><tr><th>Key</th><th>Default</th><th>What it does</th></tr></thead>
+          <caption>
+            Configuration keys, with the value used when the key is absent.
+          </caption>
+          <thead><tr><th scope="col">Key</th><th scope="col">Default</th><th scope="col">What it does</th></tr></thead>
           <tbody>
             <tr><td><code>tasks</code></td><td><code>[]</code></td><td>The registered task files, as absolute paths. <code>add</code> and <code>remove</code> edit this list; hand-editing works just as well.</td></tr>
             <tr><td><code>agents.&lt;name&gt;.cmd</code></td><td>—</td><td>The command template. <code>{prompt}</code> is substituted as a single argument, never spliced into a shell string; without it the prompt arrives on stdin. <code>{model}</code> and <code>{permission_mode}</code> work the same way.</td></tr>
@@ -252,7 +260,10 @@ cmd = "codex exec {prompt}"</code></pre>
       </p>
       <div class="scroller">
         <table class="keys">
-          <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+          <caption>
+            Every <code>openroutine</code> subcommand.
+          </caption>
+          <thead><tr><th scope="col">Command</th><th scope="col">What it does</th></tr></thead>
           <tbody>
             <tr><td><code>serve</code></td><td>Run the scheduler in the foreground.</td></tr>
             <tr><td><code>list</code></td><td>Show every task, its schedule, and its health.</td></tr>
@@ -294,7 +305,10 @@ cmd = "codex exec {prompt}"</code></pre>
       <h3>Endpoints</h3>
       <div class="scroller">
         <table class="keys">
-          <thead><tr><th>Route</th><th>What it does</th></tr></thead>
+          <caption>
+            Every route the local API serves.
+          </caption>
+          <thead><tr><th scope="col">Route</th><th scope="col">What it does</th></tr></thead>
           <tbody>
             <tr><td><code>GET /v1/tasks</code></td><td>Every registered task, with schedule and next fire time.</td></tr>
             <tr><td><code>GET /v1/tasks/{id}</code></td><td>One task in detail.</td></tr>
@@ -414,7 +428,10 @@ openroutine logs &lt;task&gt;  <span class="c"># what the agent actually printed
       </p>
       <div class="scroller">
         <table class="keys">
-          <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+          <caption>
+            Terms used identically by the CLI, the web UI, and these docs.
+          </caption>
+          <thead><tr><th scope="col">Term</th><th scope="col">Meaning</th></tr></thead>
           <tbody>
             <tr><td><code>Task</code></td><td>A unit of agent work, defined entirely by a single markdown file registered with <code>openroutine add</code>. Its <code>name</code> is prose for people; its id is derived from that name and is what everything keys by. Renaming or moving the file changes nothing.</td></tr>
             <tr><td><code>Id</code></td><td>A task’s identity, derived from its <code>name</code>: lowercase, whitespace runs to single hyphens, anything outside <code>[a-z0-9_-]</code> dropped, ends trimmed. Unique across the machine — two names deriving one id is refused, not resolved. It is what the state file records, what <code>runs/&lt;id&gt;/</code> is called, what an API path carries, and what the CLI answers to.</td></tr>

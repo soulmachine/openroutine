@@ -1,71 +1,355 @@
+/* The local dashboard.
+ *
+ * Structured after vercel.com/design.md, and deliberately identical in
+ * tokens and type stack to the marketing site (site/public/styles.css) so the
+ * product and the page that describes it are visibly the same object. Two
+ * departures from that document, both because it is written to establish
+ * *Vercel* authorship on Vercel-authored pages: the platform sans/mono stack
+ * stands in for Geist (the type *system* is applied on top of it unchanged),
+ * and "design in monochrome" is read as one warm ramp rather than a grey one.
+ *
+ * Accent is spent on links and the primary action only. Every state colour
+ * below sits behind a word that says the same thing, so nothing here depends
+ * on colour to be read.
+ */
+
 :root {
-  --bg: #fbfaf8;
-  --panel: #ffffff;
-  --ink: #1c1a17;
-  --muted: #6b6560;
-  --line: #e5e0d8;
-  --accent: #7a5c3e;
-  --ok: #2f6b45;
-  --bad: #9c3328;
-  --warn: #8a6d1f;
-  font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --or-surface-primary: #fbfaf8;
+  --or-surface-secondary: #ffffff;
+
+  --or-text-primary: #1c1a17;
+  --or-text-secondary: #6b6560;
+  --or-text-on-accent: #fbfaf8;
+
+  --or-border-subtle: #ece7de;
+  --or-border-default: #e5e0d8;
+  --or-accent: #7a5c3e;
+  --or-focus: #7a5c3e;
+  --or-color-ok: #2f6b45;
+  --or-color-error: #9c3328;
+  --or-color-warning: #8a6d1f;
+
+  --or-space-1: 0.25rem;
+  --or-space-2: 0.5rem;
+  --or-space-3: 0.75rem;
+  --or-space-4: 1rem;
+  --or-space-5: 1.25rem;
+  --or-space-6: 1.5rem;
+  --or-space-8: 2rem;
+  --or-space-10: 2.5rem;
+  --or-space-12: 3rem;
+  --or-space-16: 4rem;
+
+  --or-font-sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --or-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --or-type-page-title: 1.4rem;
+  --or-type-title: 1.05rem;
+  --or-type-section: 0.95rem;
+  --or-type-body: 1rem;
+  --or-type-label: 0.8125rem;
+  --or-type-metadata: 0.75rem;
+  --or-weight-semibold: 500;
+  --or-weight-heading: 600;
+
+  --or-leading-title: 1.25;
+  --or-leading-section: 1.35;
+  --or-leading-body: 1.5;
+
+  --or-radius-small: 5px;
+  --or-radius: 10px;
+
+  --or-shell: 66rem;
+  --or-measure: 64ch;
+
+  color-scheme: light dark;
+  font-family: var(--or-font-sans);
 }
+
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #16151a;
-    --panel: #1e1d24;
-    --ink: #ece9e4;
-    --muted: #9a948c;
-    --line: #322f39;
-    --accent: #c8a179;
-    --ok: #7fc59b;
-    --bad: #e0857a;
-    --warn: #d8bb66;
+    --or-surface-primary: #16151a;
+    --or-surface-secondary: #1e1d24;
+
+    --or-text-primary: #ece9e4;
+    --or-text-secondary: #9a948c;
+    --or-text-on-accent: #16151a;
+
+    --or-border-subtle: #26242d;
+    --or-border-default: #322f39;
+    --or-accent: #c8a179;
+    --or-focus: #c8a179;
+    --or-color-ok: #7fc59b;
+    --or-color-error: #e0857a;
+    --or-color-warning: #d8bb66;
   }
 }
+
 * { box-sizing: border-box; }
+
 body {
-  margin: 0; background: var(--bg); color: var(--ink);
-  line-height: 1.5; padding: 2rem 1.25rem 4rem;
+  margin: 0;
+  background: var(--or-surface-primary);
+  color: var(--or-text-primary);
+  font-size: var(--or-type-body);
+  line-height: var(--or-leading-body);
+  padding: var(--or-space-8) var(--or-space-5) var(--or-space-16);
 }
-header, main, footer { max-width: 62rem; margin: 0 auto; }
-h1 { font-size: 1.4rem; margin: 0; letter-spacing: -0.01em;
-  display: flex; align-items: center; gap: 0.5rem; }
+
+/* A dashboard that redraws itself every five seconds has no business moving
+ * on its own as well; the rule is here so a later transition inherits it. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+header, main, footer { max-width: var(--or-shell); margin: 0 auto; }
+
+.skip-link {
+  position: absolute;
+  left: var(--or-space-2);
+  top: var(--or-space-2);
+  padding: var(--or-space-2) var(--or-space-4);
+  background: var(--or-surface-secondary);
+  border: 1px solid var(--or-border-default);
+  border-radius: var(--or-radius-small);
+  color: var(--or-text-primary);
+  font-size: var(--or-type-label);
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+
+.skip-link:focus-visible { transform: none; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- type ---------- */
+
+h1 {
+  font-size: var(--or-type-page-title);
+  line-height: var(--or-leading-title);
+  font-weight: var(--or-weight-heading);
+  margin: 0;
+  letter-spacing: -0.015em;
+  display: flex;
+  align-items: center;
+  gap: var(--or-space-2);
+}
+
 /* The 192px source scaled down, so it stays sharp on a retina screen.
    Corners are already rounded in the artwork; nothing to mask here. */
 .mark { width: 1.625rem; height: 1.625rem; flex: none; }
-h2 { font-size: 1.05rem; margin: 0; }
-h3 { font-size: 0.95rem; margin: 2rem 0 0.5rem; color: var(--muted); }
-.sub { color: var(--muted); margin: 0.35rem 0 1.5rem; font-size: 0.9rem; }
-.bar { display: flex; align-items: center; gap: 1rem; margin: 1.25rem 0 0.75rem; flex-wrap: wrap; }
-.bar h2 { margin-right: auto; }
-table { width: 100%; border-collapse: collapse; background: var(--panel);
-  border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--line);
-  font-size: 0.875rem; vertical-align: top; }
-th { font-weight: 600; color: var(--muted); font-size: 0.75rem;
-  text-transform: uppercase; letter-spacing: 0.05em; }
-tr:last-child td { border-bottom: none; }
-td.id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-a { color: var(--accent); }
-button {
-  font: inherit; font-size: 0.85rem; padding: 0.35rem 0.8rem; border-radius: 7px;
-  border: 1px solid var(--accent); background: var(--accent); color: var(--bg); cursor: pointer;
+
+h2 {
+  font-size: var(--or-type-title);
+  line-height: var(--or-leading-title);
+  font-weight: var(--or-weight-heading);
+  margin: 0;
 }
-button.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+
+/* The detail view's title is the task id — the same operational identifier the
+ * list column and the CLI show, so it takes the same mono treatment there. */
+#task-title { font-family: var(--or-font-mono); }
+
+/* Leaving the schedule for a single task is a step back up, not a heading. */
+#back { margin-bottom: var(--or-space-4); }
+
+h3 {
+  font-size: var(--or-type-section);
+  line-height: var(--or-leading-section);
+  font-weight: var(--or-weight-heading);
+  margin: var(--or-space-8) 0 var(--or-space-3);
+}
+
+.sub {
+  color: var(--or-text-secondary);
+  margin: var(--or-space-2) 0 var(--or-space-6);
+  font-size: 0.9rem;
+  max-width: var(--or-measure);
+}
+
+p { max-width: var(--or-measure); }
+
+a { color: var(--or-accent); text-underline-offset: 2px; }
+
+:focus-visible {
+  outline: 2px solid var(--or-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+code { font-family: var(--or-font-mono); font-size: 0.875em; }
+
+/* ---------- action bars ---------- */
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--or-space-4);
+  margin: var(--or-space-6) 0 var(--or-space-3);
+  flex-wrap: wrap;
+}
+
+.bar h2 { margin-right: auto; }
+
+button {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: var(--or-space-1) var(--or-space-3);
+  border-radius: var(--or-radius-small);
+  border: 1px solid var(--or-accent);
+  background: var(--or-accent);
+  color: var(--or-text-on-accent);
+  cursor: pointer;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--or-text-primary);
+  border-color: var(--or-border-default);
+}
+
+button.ghost:hover { border-color: var(--or-text-secondary); }
 button:disabled { opacity: 0.5; cursor: default; }
-.tag { font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 999px;
-  border: 1px solid currentColor; margin-left: 0.4rem; white-space: nowrap; }
-.tag.broken { color: var(--bad); }
-.tag.new { color: var(--warn); }
-.tag.running { color: var(--ok); }
-.tag.paused { color: var(--muted); }
-.note { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 0.2rem; }
-.path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--muted); font-size: 0.8rem; word-break: break-all; }
-pre { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-  padding: 0.9rem; overflow-x: auto; font-size: 0.8rem; max-height: 30rem; }
-#banner { background: var(--warn); color: var(--bg); padding: 0.6rem 0.9rem;
-  border-radius: 8px; font-size: 0.85rem; margin-bottom: 1rem; }
-.toggle { font-size: 0.8rem; color: var(--muted); display: flex; align-items: center; gap: 0.35rem; }
-footer p { color: var(--muted); font-size: 0.78rem; margin-top: 3rem; }
+
+/* The actions column packs two buttons into one cell. */
+td button + button { margin-left: var(--or-space-2); }
+
+.toggle {
+  font-size: var(--or-type-label);
+  color: var(--or-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--or-space-1);
+}
+
+/* ---------- tables ---------- */
+
+/* No card around the evidence: the rules between rows already group it, and a
+ * frame around them is a border repairing a hierarchy that needs no repair. */
+.scroller { overflow-x: auto; }
+
+/* The min-width is the point at which columns stop being readable. Without it
+ * a narrow screen squeezes Description to two words a line and pushes Status
+ * off the edge anyway — scrolling the whole table is the honest reflow. */
+table { width: 100%; border-collapse: collapse; min-width: 44rem; }
+#runs { min-width: 34rem; }
+
+caption {
+  caption-side: top;
+  text-align: left;
+  color: var(--or-text-secondary);
+  font-size: var(--or-type-label);
+  margin-bottom: var(--or-space-3);
+  /* A caption belongs to its table, so it inherits the table's min-width and
+   * would sit off-screen on a phone — readable only by scrolling the table
+   * sideways first. Pinned to the left edge of the scroller and wrapped to the
+   * viewport, it stays put while the columns move under it. */
+  position: sticky;
+  left: 0;
+  max-width: min(var(--or-measure), calc(100vw - var(--or-space-10)));
+}
+
+th, td {
+  /* Every column here is text or a timestamp, so headers and cells are all
+   * left aligned. A numeric column would take text-align:right on both. */
+  text-align: left;
+  padding: var(--or-space-2) var(--or-space-3);
+  border-bottom: 1px solid var(--or-border-subtle);
+  font-size: 0.875rem;
+  vertical-align: top;
+}
+
+/* Sentence case, at label size. All-caps letterspaced headers are an overline
+ * wearing a table header's clothes, and they read slower. */
+thead th {
+  font-size: var(--or-type-label);
+  font-weight: var(--or-weight-semibold);
+  color: var(--or-text-secondary);
+  white-space: nowrap;
+  border-bottom-color: var(--or-border-default);
+}
+
+tbody tr:last-child td { border-bottom: none; }
+
+/* A task id is an operational identifier — the thing the CLI and the API key
+ * by — so it is the one column that earns mono. */
+td.id { font-family: var(--or-font-mono); white-space: nowrap; }
+
+/* ---------- state ---------- */
+
+/* Task health reads as a word in its own column, not as a capsule trailing the
+ * id. The colour repeats what the word already says, so greyscale loses
+ * nothing and a screen reader hears the whole thing. */
+.state { display: block; white-space: nowrap; }
+.state + .state { margin-top: var(--or-space-1); }
+
+/* Task health. */
+.state.broken { color: var(--or-color-error); font-weight: var(--or-weight-semibold); }
+.state.changed { color: var(--or-color-warning); }
+.state.running { color: var(--or-color-ok); }
+.state.paused, .state.ready, .state.completed { color: var(--or-text-secondary); }
+
+/* Run outcomes, matched to the task states above so "failed" reads the same
+ * in both tables. A run that was reaped or cut short is neither a success nor
+ * a fault in the task, which is what the middle tier is for. */
+.state.succeeded { color: var(--or-color-ok); }
+.state.failed { color: var(--or-color-error); font-weight: var(--or-weight-semibold); }
+.state.timed-out, .state.interrupted { color: var(--or-color-warning); }
+
+.note {
+  display: block;
+  color: var(--or-text-secondary);
+  font-size: var(--or-type-metadata);
+  margin-top: var(--or-space-1);
+}
+
+.path {
+  font-family: var(--or-font-mono);
+  color: var(--or-text-secondary);
+  font-size: var(--or-type-label);
+  word-break: break-all;
+  margin: var(--or-space-2) 0 0;
+  max-width: none;
+}
+
+pre {
+  background: var(--or-surface-secondary);
+  border: 1px solid var(--or-border-subtle);
+  border-radius: var(--or-radius);
+  padding: var(--or-space-3);
+  overflow-x: auto;
+  font-family: var(--or-font-mono);
+  font-size: var(--or-type-label);
+  max-height: 30rem;
+}
+
+/* A held scheduler is state worth announcing, but a solid warning slab is a
+ * decorated surface. A rule plus the sentence carries it. */
+#banner {
+  border-left: 2px solid var(--or-color-warning);
+  padding: var(--or-space-1) 0 var(--or-space-1) var(--or-space-4);
+  font-size: 0.9rem;
+  margin-bottom: var(--or-space-4);
+  max-width: var(--or-measure);
+}
+
+.empty { color: var(--or-text-secondary); font-size: 0.9rem; }
+
+footer p {
+  color: var(--or-text-secondary);
+  font-size: var(--or-type-metadata);
+  margin-top: var(--or-space-12);
+}

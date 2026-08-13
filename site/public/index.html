@@ -20,6 +20,8 @@
 </head>
 <body>
 
+<a class="skip-link" href="#main">Skip to content</a>
+
 <header class="masthead">
   <div class="wrap">
     <a class="wordmark" href="/">
@@ -33,7 +35,7 @@
   </div>
 </header>
 
-<main>
+<main id="main">
 
   <section class="hero">
     <div class="wrap">
@@ -103,39 +105,39 @@ request. Summarize everything else in reports/todo-digest.md.</code></pre>
         A scheduled agent task is just a prompt with a schedule attached. Everything else follows
         from taking that literally.
       </p>
-      <div class="cards">
-        <div class="card">
-          <h3>Tasks live in your repo</h3>
-          <p>
+      <dl class="positions">
+        <div>
+          <dt>Tasks live in your repo</dt>
+          <dd>
             Every field — schedule, agent, <code>disabled</code> — is frontmatter in a
             markdown file. Turning a task off is a commit your reviewer can see, not invisible
             state in someone’s account.
-          </p>
+          </dd>
         </div>
-        <div class="card">
-          <h3>The scheduler is the daemon</h3>
-          <p>
+        <div>
+          <dt>The scheduler is the daemon</dt>
+          <dd>
             Not launchd, not crontab — those run agents in a stripped environment with no
             <code>PATH</code> or API keys, and are where agent jobs quietly go to die. Owning the
             scheduler buys identical behaviour on macOS and Linux, real environments, and honest
             bookkeeping.
-          </p>
+          </dd>
         </div>
-        <div class="card">
-          <h3>Agent-agnostic by construction</h3>
-          <p>
+        <div>
+          <dt>Agent-agnostic by construction</dt>
+          <dd>
             OpenRoutine never talks to a model API. An agent is just a command template, so any
             CLI that accepts a prompt works — Claude Code, Codex, Gemini, or your own.
-          </p>
+          </dd>
         </div>
-        <div class="card">
-          <h3>One binary, zero databases</h3>
-          <p>
+        <div>
+          <dt>One binary, zero databases</dt>
+          <dd>
             The scheduler, the API, and the UI in one static Rust binary. All durable data is two
             plain-text formats: markdown you own, JSON the machine owns.
-          </p>
+          </dd>
         </div>
-      </div>
+      </dl>
     </div>
   </section>
 
@@ -148,12 +150,16 @@ request. Summarize everything else in reports/todo-digest.md.</code></pre>
       </p>
       <div class="scroller">
         <table class="compare">
+          <caption>
+            Each vendor row states what that vendor’s own documentation described in August 2026;
+            both products are moving, so check theirs before deciding on ours.
+          </caption>
           <thead>
             <tr>
-              <th></th>
-              <th>Claude Code Routines</th>
-              <th>ChatGPT scheduled tasks</th>
-              <th class="mine">OpenRoutine</th>
+              <th scope="col"><span class="visually-hidden">Capability</span></th>
+              <th scope="col">Claude Code Routines</th>
+              <th scope="col">ChatGPT scheduled tasks</th>
+              <th scope="col" class="mine">OpenRoutine</th>
             </tr>
           </thead>
           <tbody>

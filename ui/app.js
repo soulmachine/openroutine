@@ -7,7 +7,7 @@ const state = { tasks: [], showCompleted: false, current: null, stream: null };
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", ...options });
   if (response.status === 401) {
-    banner("This page is not signed in. Run `openroutine open` to get a fresh link.");
+    banner("This page is not signed in. Run `openroutine dashboard` to get a fresh link.");
     throw new Error("unauthorized");
   }
   const body = await response.json().catch(() => ({}));
@@ -35,18 +35,64 @@ function countdown(iso) {
 }
 
 function when(task) {
-  if (task.completed) return "completed";
+  // A completed one-shot has no next moment, and the Status column already
+  // says "completed" — repeating it here would be the same fact twice.
+  if (task.completed) return "\u2014";
   if (!task.nextFireAt) return "no schedule";
   const at = new Date(task.nextFireAt);
   const shown = at.toLocaleString();
   return task.oneShot ? `${shown} (${countdown(task.nextFireAt)})` : shown;
 }
 
-function tag(text, kind) {
+function stateWord(text, kind) {
   const span = document.createElement("span");
-  span.className = `tag ${kind}`;
+  span.className = `state ${kind}`;
   span.textContent = text;
   return span;
+}
+
+function note(text) {
+  const span = document.createElement("span");
+  span.className = "note";
+  span.textContent = text;
+  return span;
+}
+
+/// Health as a word per line, plus the sentence that explains it.
+///
+/// The API sends `novelty` as "changed: the definition differs from the one
+/// that last ran" — a whole sentence. The word before the colon belongs in the
+/// Status column; the rest is an explanation, and explanations go under the
+/// description with the parse error, not into a capsule beside the id.
+function health(task) {
+  const states = [];
+  const notes = [];
+
+  if (task.error) notes.push(task.error);
+  if (task.broken) states.push(["broken", "broken"]);
+
+  if (task.novelty) {
+    // "new" and "changed" are the same condition to the scheduler — the
+    // definition in front of it is not the one that last ran — so they share
+    // one treatment and differ only in the word.
+    const [word, rest] = splitOnce(task.novelty, ": ");
+    states.push([word, "changed"]);
+    if (rest) notes.push(task.novelty);
+  }
+
+  if (task.running) states.push(["running", "running"]);
+  if (task.paused) states.push(["paused", "paused"]);
+  if (task.completed) states.push(["completed", "completed"]);
+  // Ready is a real state, not the absence of one: the definition parses and
+  // names an agent that exists. Say so rather than leaving the cell blank.
+  if (states.length === 0) states.push(["ready", "ready"]);
+
+  return { states, notes };
+}
+
+function splitOnce(text, separator) {
+  const at = text.indexOf(separator);
+  return at === -1 ? [text, ""] : [text.slice(0, at), text.slice(at + separator.length)];
 }
 
 function renderTasks() {
@@ -59,6 +105,8 @@ function renderTasks() {
   for (const task of visible) {
     const row = document.createElement("tr");
 
+    const { states, notes } = health(task);
+
     const id = document.createElement("td");
     id.className = "id";
     const link = document.createElement("a");
@@ -69,19 +117,10 @@ function renderTasks() {
       openTask(task.id);
     });
     id.append(link);
-    if (task.broken) id.append(tag("broken", "broken"));
-    if (task.novelty) id.append(tag(task.novelty, "new"));
-    if (task.running) id.append(tag("running", "running"));
-    if (task.paused) id.append(tag("paused", "paused"));
 
     const description = document.createElement("td");
     description.textContent = task.description ?? "—";
-    if (task.error) {
-      const note = document.createElement("span");
-      note.className = "note";
-      note.textContent = task.error;
-      description.append(note);
-    }
+    description.append(...notes.map(note));
 
     const schedule = document.createElement("td");
     schedule.textContent = task.schedule ?? "—";
@@ -89,7 +128,10 @@ function renderTasks() {
     const next = document.createElement("td");
     next.textContent = when(task);
 
-    row.append(id, description, schedule, next, document.createElement("td"));
+    const status = document.createElement("td");
+    status.append(...states.map(([text, kind]) => stateWord(text, kind)));
+
+    row.append(id, description, schedule, next, status);
     body.append(row);
   }
 }
@@ -126,7 +168,13 @@ async function openTask(id) {
     const trigger = document.createElement("td");
     trigger.textContent = run.trigger;
     const status = document.createElement("td");
-    status.textContent = run.status;
+    // The same word-plus-colour treatment the task list uses, so "failed"
+    // means the same thing to the eye in both tables. The word carries it;
+    // the colour only agrees with the word.
+    status.append(stateWord(run.status, run.status));
+    if (run.exitCode !== undefined && run.exitCode !== null && run.status === "failed") {
+      status.append(note(`exit ${run.exitCode}`));
+    }
 
     const actions = document.createElement("td");
     const view = document.createElement("button");

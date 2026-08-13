@@ -1,44 +1,100 @@
 /* openroutine.dev
  *
- * The palette and type stack are lifted verbatim from the daemon's own web UI
+ * Structured after vercel.com/design.md — precise, calm, evidence-led,
+ * restrained. Two deliberate departures from that document, both because it is
+ * written to establish *Vercel* authorship on Vercel-authored report pages:
+ *
+ *   - Geist is replaced by the platform sans/mono stack. The type *system* —
+ *     roles, scale, weights, leading, a 60-68ch measure — is applied verbatim
+ *     on top of it. No webfonts, no build step, same rule the product follows.
+ *   - "Design in monochrome" is read as a single warm ramp rather than a grey
+ *     one. The ramp below is the product's own palette, shared with ui/ and
+ *     with the favicon artwork; accent is spent only on links and the primary
+ *     action, and every colour carries a non-colour cue beside it.
+ *
+ * The palette and type stack stay identical to the daemon's own web UI
  * (ui/styles.css) so the site and the product are visibly the same object.
- * No webfonts, no framework, no build step — same rule the product follows.
  */
 
 :root {
-  --bg: #fbfaf8;
-  --panel: #ffffff;
-  --ink: #1c1a17;
-  --muted: #6b6560;
-  --line: #e5e0d8;
-  --accent: #7a5c3e;
-  --ok: #2f6b45;
-  --bad: #9c3328;
-  --warn: #8a6d1f;
+  /* ---- surfaces ---- */
+  --or-surface-primary: #fbfaf8;
+  --or-surface-secondary: #ffffff;
+  /* Earned, not decorative: the one column a comparison is actually about. */
+  --or-surface-emphasis: #f4efe8;
 
-  --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* ---- text ---- */
+  --or-text-primary: #1c1a17;
+  --or-text-secondary: #6b6560;
+  --or-text-on-accent: #fbfaf8;
 
-  /* A wash of the accent, used to mark the OpenRoutine column and callouts. */
-  --accent-wash: #f4efe8;
+  /* ---- borders and state ---- */
+  --or-border-subtle: #ece7de;
+  --or-border-default: #e5e0d8;
+  --or-accent: #7a5c3e;
+  --or-focus: #7a5c3e;
+  --or-color-warning: #8a6d1f;
+
+  /* ---- spacing ---- 4px base. Gaps own relationships: within-group 2-4,
+     between-group 6-8, major sections 8-16. Nothing here picks a gap by eye. */
+  --or-space-1: 0.25rem;
+  --or-space-2: 0.5rem;
+  --or-space-3: 0.75rem;
+  --or-space-4: 1rem;
+  --or-space-5: 1.25rem;
+  --or-space-6: 1.5rem;
+  --or-space-7: 1.75rem;
+  --or-space-8: 2rem;
+  --or-space-10: 2.5rem;
+  --or-space-12: 3rem;
+  --or-space-14: 3.5rem;
+  --or-space-16: 4rem;
+
+  /* ---- type ---- */
+  --or-font-sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --or-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --or-type-display: clamp(2rem, 1.35rem + 2.6vw, 2.6rem);
+  --or-type-page-title: 1.75rem;
+  --or-type-title: 1.35rem;
+  --or-type-section: 1.05rem;
+  --or-type-body: 1rem;
+  --or-type-label: 0.8125rem;
+  --or-weight-semibold: 500;
+  --or-weight-heading: 600;
+
+  --or-leading-display: 1.1;
+  --or-leading-title: 1.25;
+  --or-leading-section: 1.35;
+  --or-leading-body: 1.6;
+
+  --or-radius-small: 5px;
+  --or-radius: 10px;
+
+  /* The shell is the full 12 columns; prose takes 6-7 of them. Measure is in
+   * ch so it tracks the font actually resolved rather than a guessed rem. */
+  --or-shell: 66rem;
+  --or-measure: 64ch;
 
   color-scheme: light dark;
-  font-family: var(--sans);
+  font-family: var(--or-font-sans);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #16151a;
-    --panel: #1e1d24;
-    --ink: #ece9e4;
-    --muted: #9a948c;
-    --line: #322f39;
-    --accent: #c8a179;
-    --ok: #7fc59b;
-    --bad: #e0857a;
-    --warn: #d8bb66;
+    --or-surface-primary: #16151a;
+    --or-surface-secondary: #1e1d24;
+    --or-surface-emphasis: #24222b;
 
-    --accent-wash: #24222b;
+    --or-text-primary: #ece9e4;
+    --or-text-secondary: #9a948c;
+    --or-text-on-accent: #16151a;
+
+    --or-border-subtle: #26242d;
+    --or-border-default: #322f39;
+    --or-accent: #c8a179;
+    --or-focus: #c8a179;
+    --or-color-warning: #d8bb66;
   }
 }
 
@@ -48,169 +104,223 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--ink);
-  line-height: 1.6;
-  font-size: 1rem;
+  background: var(--or-surface-primary);
+  color: var(--or-text-primary);
+  font-size: var(--or-type-body);
+  line-height: var(--or-leading-body);
   overflow-wrap: break-word;
+}
+
+/* Nothing here animates to explain a state change, so nothing here needs to
+ * move at all. The rule is kept so a later hover or transition inherits it. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ---------- shell ---------- */
 
 .wrap {
-  max-width: 62rem;
+  max-width: var(--or-shell);
   margin: 0 auto;
-  padding: 0 1.25rem;
+  padding: 0 var(--or-space-5);
 }
 
-section { padding: 3.5rem 0; }
-section + section { border-top: 1px solid var(--line); }
+/* Sections are separated by space, not by rules. The one border that survives
+ * is the masthead's, below, and it earns it by being sticky. */
+section { padding: var(--or-space-12) 0; }
+
+.skip-link {
+  position: absolute;
+  left: var(--or-space-2);
+  top: var(--or-space-2);
+  z-index: 20;
+  padding: var(--or-space-2) var(--or-space-4);
+  background: var(--or-surface-secondary);
+  border: 1px solid var(--or-border-default);
+  border-radius: var(--or-radius-small);
+  color: var(--or-text-primary);
+  font-size: var(--or-type-label);
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+
+.skip-link:focus-visible { transform: none; }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* ---------- type ---------- */
 
-h1, h2, h3 { letter-spacing: -0.015em; line-height: 1.25; }
-
-h1 {
-  font-size: 2.6rem;
-  letter-spacing: -0.025em;
-  margin: 0 0 1rem;
+h1, h2, h3 {
+  letter-spacing: -0.015em;
+  max-width: var(--or-measure);
 }
 
+h1 {
+  font-size: var(--or-type-display);
+  line-height: var(--or-leading-display);
+  font-weight: var(--or-weight-heading);
+  letter-spacing: -0.025em;
+  margin: 0 0 var(--or-space-4);
+}
+
+/* The docs page is a reference, not a pitch: its h1 is a page title, not a
+ * display line. Same role, one step down the scale. */
+.docs h1 { font-size: var(--or-type-page-title); }
+
 h2 {
-  font-size: 1.35rem;
-  margin: 0 0 0.35rem;
+  font-size: var(--or-type-title);
+  line-height: var(--or-leading-title);
+  font-weight: var(--or-weight-heading);
+  /* A heading sits close to the paragraph it introduces; the gap that means
+   * "new section" lives on the section, not here. */
+  margin: 0 0 var(--or-space-2);
 }
 
 h3 {
-  font-size: 1rem;
-  margin: 2.25rem 0 0.6rem;
+  font-size: var(--or-type-section);
+  line-height: var(--or-leading-section);
+  font-weight: var(--or-weight-heading);
+  margin: var(--or-space-8) 0 var(--or-space-3);
 }
+
+p { margin: 0 0 var(--or-space-4); max-width: var(--or-measure); }
+p:last-child { margin-bottom: 0; }
 
 .lede {
   font-size: 1.1rem;
-  color: var(--muted);
-  margin: 0 0 1.75rem;
-  max-width: 46rem;
+  color: var(--or-text-secondary);
+  margin: 0 0 var(--or-space-6);
 }
 
 .section-note {
-  color: var(--muted);
-  margin: 0 0 1.75rem;
-  max-width: 46rem;
+  color: var(--or-text-secondary);
+  margin: 0 0 var(--or-space-6);
 }
 
-p { margin: 0 0 1rem; max-width: 46rem; }
-p:last-child { margin-bottom: 0; }
-
-a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a { color: var(--or-accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
 a:hover { text-decoration-thickness: 2px; }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--or-focus);
   outline-offset: 2px;
   border-radius: 4px;
 }
 
+/* Mono is the signal that something is a command, a path, or an identifier —
+ * so mono is the whole treatment. A tinted pill behind every inline `code`
+ * turns running prose into a row of badges. */
 code {
-  font-family: var(--mono);
+  font-family: var(--or-font-mono);
   font-size: 0.875em;
-  background: var(--accent-wash);
-  padding: 0.1em 0.35em;
-  border-radius: 5px;
 }
 
 pre {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 1rem 1.1rem;
+  /* A block of shell or of file content is a different medium from the prose
+   * around it, which is the one thing a surface here is allowed to say. */
+  background: var(--or-surface-secondary);
+  border: 1px solid var(--or-border-subtle);
+  border-radius: var(--or-radius);
+  padding: var(--or-space-4) var(--or-space-5);
   overflow-x: auto;
   font-size: 0.82rem;
   line-height: 1.65;
-  margin: 0 0 1.25rem;
+  margin: 0 0 var(--or-space-5);
 }
 
-pre code {
-  background: none;
-  padding: 0;
-  border-radius: 0;
-  font-size: inherit;
-}
+pre code { font-size: inherit; }
 
 /* Comment lines inside shell samples, dimmed the way a terminal would. */
-pre .c { color: var(--muted); }
-/* Frontmatter fences and keys in the task sample. */
-pre .k { color: var(--accent); }
+pre .c { color: var(--or-text-secondary); }
+/* Frontmatter fences and keys. Weight, not hue: the distinction is structural,
+ * so it survives greyscale, and it spends no accent on decoration. */
+pre .k { font-weight: var(--or-weight-heading); }
 
 /* ---------- masthead ---------- */
 
 .masthead {
-  border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
-  background: var(--bg);
+  background: var(--or-surface-primary);
+  /* The one routine-looking border on the page. It is not separating shell
+   * regions by habit — it is the edge of a layer that content scrolls under,
+   * and without it the two overlap illegibly. */
+  border-bottom: 1px solid var(--or-border-subtle);
   z-index: 10;
 }
 
 .masthead .wrap {
   display: flex;
   align-items: center;
-  gap: 1.25rem;
+  gap: var(--or-space-5);
   height: 3.5rem;
 }
 
 .wordmark {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--or-space-2);
   /* Sans, not mono: the wordmark is mixed-case, and it matches the product
    * UI's own <h1>OpenRoutine</h1>. Lowercase things — the domain, paths, the
-   * CLI — stay in var(--mono) wherever they appear. */
-  font-family: var(--sans);
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: var(--ink);
+   * CLI — stay in var(--or-font-mono) wherever they appear. */
+  font-family: var(--or-font-sans);
+  font-size: var(--or-type-section);
+  font-weight: var(--or-weight-heading);
+  color: var(--or-text-primary);
   text-decoration: none;
   margin-right: auto;
   letter-spacing: -0.02em;
 }
 
-.wordmark img { display: block; width: 1.35rem; height: 1.35rem; flex: none; }
-/* A shade larger than the old line-art mark: this one carries interior
+/* A shade larger than a line-art mark would need: this one carries interior
  * detail — a document and a dial — that turns to mud much below this. */
+.wordmark img { display: block; width: 1.35rem; height: 1.35rem; flex: none; }
 
 .masthead nav {
   display: flex;
-  gap: 1.25rem;
+  gap: var(--or-space-5);
   font-size: 0.9rem;
 }
 
-.masthead nav a { color: var(--muted); text-decoration: none; }
+.masthead nav a { color: var(--or-text-secondary); text-decoration: none; }
 .masthead nav a:hover,
-.masthead nav a[aria-current="page"] { color: var(--ink); }
+.masthead nav a[aria-current="page"] { color: var(--or-text-primary); }
 
 /* ---------- hero ---------- */
 
-.hero { padding: 4.5rem 0 3.5rem; }
+.hero { padding: var(--or-space-16) 0 var(--or-space-12); }
 
-.hero .lede { font-size: 1.2rem; max-width: 44rem; }
-.hero .lede strong { color: var(--ink); font-weight: 600; }
+.hero .lede { font-size: 1.2rem; }
+.hero .lede strong { color: var(--or-text-primary); font-weight: var(--or-weight-heading); }
 
 .cta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.6rem;
-  margin-top: 1.75rem;
+  gap: var(--or-space-3);
+  margin-top: var(--or-space-7);
 }
 
 .btn {
   font: inherit;
   font-size: 0.9rem;
-  padding: 0.5rem 1.1rem;
-  border-radius: 7px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: var(--bg);
+  padding: var(--or-space-2) var(--or-space-5);
+  border-radius: var(--or-radius-small);
+  border: 1px solid var(--or-accent);
+  background: var(--or-accent);
+  color: var(--or-text-on-accent);
   text-decoration: none;
   display: inline-block;
 }
@@ -219,69 +329,68 @@ pre .k { color: var(--accent); }
 
 .btn.ghost {
   background: transparent;
-  color: var(--ink);
-  border-color: var(--line);
+  color: var(--or-text-primary);
+  border-color: var(--or-border-default);
 }
 
-.btn.ghost:hover { border-color: var(--muted); opacity: 1; }
+.btn.ghost:hover { border-color: var(--or-text-secondary); opacity: 1; }
 
 /* ---------- two-column feature blocks ---------- */
 
 .split {
   display: grid;
-  gap: 2rem;
+  gap: var(--or-space-8);
   align-items: start;
 }
 
 /* Grid items default to min-width:auto, which lets a `pre` full of long lines
- * widen its track rather than scroll inside it. The current samples stay under
- * the limit either way; this keeps a longer one from ever pushing the page. */
-.split > *, .cards > * { min-width: 0; }
+ * widen its track rather than scroll inside it. */
+.split > * { min-width: 0; }
 
 /* The code column is sized to the widest sample it holds, not to a fraction of
  * the page — a ratio looks fine until a line is one character too long and the
- * block starts scrolling sideways for no visible reason. */
+ * block starts scrolling sideways for no visible reason. The prose column then
+ * takes what is left, which is what keeps it near its measure instead of
+ * leaving the empty rectangle a fixed split would. */
 @media (min-width: 62rem) {
-  .split { grid-template-columns: minmax(0, 34rem) minmax(0, 1fr); gap: 2.5rem; }
+  .split { grid-template-columns: minmax(0, 33rem) minmax(0, 1fr); gap: var(--or-space-10); }
   .split pre { margin-bottom: 0; }
+  .split p { max-width: none; }
 }
 
-.cards {
+/* ---------- positions: a composed list, not a grid of boxes ---------- */
+
+/* Four related claims read as four claims. Boxing each one repeats a silhouette
+ * four times and asks a border to carry a hierarchy that type and space already
+ * carry — so the boxes are gone and the relationship is the layout. */
+.positions {
   display: grid;
-  gap: 1rem;
-  /* 20rem lands the four cards as 2x2 on a desktop column rather than 3+1.
-   * min() keeps the track from exceeding the viewport on a narrow phone. */
-  grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr));
-  margin-top: 1.5rem;
-}
-
-.card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 1.1rem 1.2rem;
-}
-
-.card h3 {
-  margin: 0 0 0.4rem;
-  font-size: 0.95rem;
-  color: var(--ink);
-}
-
-.card p {
+  gap: var(--or-space-8) var(--or-space-12);
   margin: 0;
-  font-size: 0.9rem;
-  color: var(--muted);
+  grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr));
+}
+
+.positions > div { min-width: 0; }
+
+.positions dt {
+  font-size: var(--or-type-section);
+  line-height: var(--or-leading-section);
+  font-weight: var(--or-weight-heading);
+  margin: 0 0 var(--or-space-2);
+}
+
+.positions dd {
+  margin: 0;
+  color: var(--or-text-secondary);
+  font-size: 0.94rem;
 }
 
 /* ---------- tables ---------- */
 
-.scroller {
-  overflow-x: auto;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
-}
+/* Evidence spans the full shell. It is not wrapped in a card: rules between
+ * rows already group it, and a second frame around them is a border repairing
+ * a hierarchy that does not need repair. */
+.scroller { overflow-x: auto; }
 
 table {
   width: 100%;
@@ -291,75 +400,88 @@ table {
 
 .scroller table { min-width: 46rem; }
 
-th, td {
+caption {
+  caption-side: top;
   text-align: left;
-  padding: 0.7rem 0.9rem;
-  border-bottom: 1px solid var(--line);
-  font-size: 0.86rem;
+  color: var(--or-text-secondary);
+  font-size: var(--or-type-label);
+  margin-bottom: var(--or-space-3);
+  /* A caption belongs to its table, so it inherits the table's min-width and
+   * would sit off-screen on a phone — readable only by scrolling the table
+   * sideways first. Pinned to the left edge of the scroller and wrapped to the
+   * viewport, it stays put while the columns move under it. */
+  position: sticky;
+  left: 0;
+  max-width: min(var(--or-measure), calc(100vw - var(--or-space-10)));
+}
+
+th, td {
+  /* Every column here is text, so every column and every header is left
+   * aligned. A numeric column would take text-align:right on both. */
+  text-align: left;
+  padding: var(--or-space-3) var(--or-space-4);
+  border-bottom: 1px solid var(--or-border-subtle);
+  font-size: 0.88rem;
   vertical-align: top;
 }
 
-th {
-  font-weight: 600;
-  color: var(--muted);
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+/* Sentence case, at label size. All-caps letterspaced headers are an overline
+ * wearing a table header's clothes, and they read slower. */
+thead th {
+  font-size: var(--or-type-label);
+  font-weight: var(--or-weight-semibold);
+  color: var(--or-text-secondary);
   white-space: nowrap;
+  border-bottom-color: var(--or-border-default);
 }
 
 tbody th {
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 0.86rem;
-  color: var(--ink);
-  font-weight: 600;
+  font-size: 0.88rem;
+  font-weight: var(--or-weight-heading);
+  color: var(--or-text-primary);
   white-space: normal;
 }
 
-tr:last-child td, tr:last-child th { border-bottom: none; }
+tbody tr:last-child td, tbody tr:last-child th { border-bottom: none; }
 
-td code, th code { background: none; padding: 0; }
-
-/* The column that is the point of the comparison. */
-.compare th.mine, .compare td.mine {
-  background: var(--accent-wash);
-}
-
-.compare th.mine { color: var(--accent); }
+/* The column the comparison is about. The wash marks it; the header says
+ * "OpenRoutine" in words, so the mark is never the only cue. */
+.compare th.mine, .compare td.mine { background: var(--or-surface-emphasis); }
+.compare thead th.mine { color: var(--or-text-primary); }
 
 /* Reference tables in the docs: first column is a key name. */
 .keys td:first-child, .keys th:first-child { white-space: nowrap; }
-.keys td:first-child code { color: var(--accent); }
 
 /* ---------- callouts ---------- */
 
 .note {
-  border-left: 3px solid var(--line);
-  padding: 0.15rem 0 0.15rem 1rem;
-  color: var(--muted);
-  font-size: 0.92rem;
-  margin: 1.25rem 0;
-  max-width: 46rem;
+  border-left: 2px solid var(--or-border-default);
+  padding: var(--or-space-1) 0 var(--or-space-1) var(--or-space-4);
+  color: var(--or-text-secondary);
+  font-size: 0.94rem;
+  margin: var(--or-space-5) 0;
+  max-width: var(--or-measure);
 }
 
-.note strong { color: var(--ink); }
+.note strong { color: var(--or-text-primary); font-weight: var(--or-weight-heading); }
 
-.note.warn { border-left-color: var(--warn); }
+/* State, not decoration — and never the only cue: each warn note names the
+ * limit in its own first words. */
+.note.warn { border-left-color: var(--or-color-warning); }
 
 /* ---------- docs layout ---------- */
 
 .docs-toc {
-  margin: 0 0 1rem;
+  margin: 0 0 var(--or-space-4);
   padding: 0;
   list-style: none;
   columns: 2;
-  column-gap: 2rem;
-  font-size: 0.92rem;
+  column-gap: var(--or-space-8);
+  font-size: 0.94rem;
   max-width: 40rem;
 }
 
-.docs-toc li { margin-bottom: 0.3rem; break-inside: avoid; }
+.docs-toc li { margin-bottom: var(--or-space-1); break-inside: avoid; }
 
 .docs h2 { margin-top: 0; }
 
@@ -367,30 +489,28 @@ td code, th code { background: none; padding: 0; }
  * on the h2 it does nothing, and every #link lands under the sticky masthead. */
 section[id] { scroll-margin-top: 4.25rem; }
 
-.docs section { padding: 2.75rem 0; }
+.docs section { padding: var(--or-space-10) 0; }
 
 /* ---------- footer ---------- */
 
 footer {
-  border-top: 1px solid var(--line);
-  padding: 2.5rem 0 3.5rem;
-  color: var(--muted);
-  font-size: 0.86rem;
+  padding: var(--or-space-16) 0 var(--or-space-14);
+  color: var(--or-text-secondary);
+  font-size: 0.88rem;
 }
 
-footer p { max-width: 44rem; }
-
 footer .closer {
-  color: var(--ink);
+  color: var(--or-text-primary);
   font-size: 0.95rem;
-  margin-bottom: 1.25rem;
+  margin-bottom: var(--or-space-5);
 }
 
 footer .meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem 1.25rem;
+  gap: var(--or-space-2) var(--or-space-5);
   margin: 0;
+  max-width: none;
 }
 
 /* ---------- 404 ---------- */
@@ -405,9 +525,8 @@ footer .meta {
 /* ---------- small screens ---------- */
 
 @media (max-width: 40rem) {
-  h1 { font-size: 2rem; }
-  .hero { padding: 3rem 0 2.5rem; }
+  .hero { padding: var(--or-space-12) 0 var(--or-space-10); }
   .hero .lede { font-size: 1.05rem; }
-  section { padding: 2.75rem 0; }
+  section { padding: var(--or-space-10) 0; }
   .docs-toc { columns: 1; }
 }
