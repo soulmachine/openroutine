@@ -6,6 +6,9 @@
 <title>Docs — OpenRoutine</title>
 <meta name="description" content="OpenRoutine reference: task file frontmatter, configuration keys, the CLI, the REST API, and deploying the daemon under launchd or systemd.">
 <link rel="canonical" href="https://openroutine.dev/docs">
+<link rel="alternate" hreflang="en" href="https://openroutine.dev/docs">
+<link rel="alternate" hreflang="zh" href="https://openroutine.dev/zh/docs">
+<link rel="alternate" hreflang="x-default" href="https://openroutine.dev/docs">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -31,6 +34,7 @@
     <nav>
       <a href="/docs" aria-current="page">Docs</a>
       <a href="https://github.com/soulmachine/openroutine">GitHub</a>
+      <a href="/zh/docs" data-lang-switch="zh" lang="zh-CN" hreflang="zh">中文</a>
     </nav>
   </div>
 </header>
@@ -478,5 +482,20 @@ openroutine logs &lt;task&gt;  <span class="c"># what the agent actually printed
   </div>
 </footer>
 
+<script>
+(() => {
+  const KEY = "or-lang";
+  const swap = document.querySelector("a[data-lang-switch]");
+  if (!swap) return;
+  swap.addEventListener("click", () => {
+    try { localStorage.setItem(KEY, swap.getAttribute("data-lang-switch")); } catch {}
+  });
+  if (!document.documentElement.lang.startsWith("en")) return;
+  let saved = null;
+  try { saved = localStorage.getItem(KEY); } catch {}
+  const want = saved || navigator.language || "";
+  if (want.toLowerCase().startsWith("zh")) location.replace(swap.href);
+})();
+</script>
 </body>
 </html>

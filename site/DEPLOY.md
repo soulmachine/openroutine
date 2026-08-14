@@ -114,3 +114,8 @@ Pages. Pages continues to work, but new features and optimizations are focused o
 `wrangler.toml` deliberately has no `main`. With no Worker script, every request is a free
 static-asset request, so the free plan's 100k/day Worker-invocation cap never applies and
 bandwidth is unmetered. Adding `main` or `run_worker_first` later would change that.
+
+This is also why the Chinese pages under `public/zh/` do their language detection with a tiny
+client-side inline script rather than an `Accept-Language` redirect: a redirect needs a Worker,
+and a Worker un-does the paragraph above. The CSP in `public/_headers` allows exactly that one
+script, pinned by sha256 hash — the recompute instructions live in a comment next to it.

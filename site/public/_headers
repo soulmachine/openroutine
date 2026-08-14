@@ -2,7 +2,11 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   X-Frame-Options: DENY
-  Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'sha256-9e6Kbut5N51FTVCX9gn4Tb4K45QzjGNpN6JBvVvHE6E='; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'
+
+# script-src pins the single inline language script — byte-identical on every
+# page — by hash. Editing that script in any page means recomputing the hash
+# (sha256, base64) and keeping all six copies in sync, or the browser drops it.
 
 # No Cache-Control overrides on purpose. Asset filenames carry no content hash,
 # so a long max-age on styles.css would serve fresh HTML against stale CSS for

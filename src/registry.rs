@@ -108,6 +108,8 @@ pub enum Novelty {
 }
 
 impl Novelty {
+    /// The dashboard (ui/app.js, NOVELTY map) matches these sentences
+    /// verbatim — change them there too.
     pub fn note(self) -> Option<&'static str> {
         match self {
             Novelty::NeverRun => Some("new: this task has never run"),

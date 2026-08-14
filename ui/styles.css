@@ -348,8 +348,28 @@ pre {
 
 .empty { color: var(--or-text-secondary); font-size: 0.9rem; }
 
+/* The language switch shares the footer line with the closing sentence. */
+footer {
+  display: flex;
+  align-items: baseline;
+  gap: var(--or-space-4);
+  flex-wrap: wrap;
+}
+
 footer p {
   color: var(--or-text-secondary);
   font-size: var(--or-type-metadata);
   margin-top: var(--or-space-12);
+  margin-right: auto;
+}
+
+/* ---------- Chinese ---------- */
+
+/* Simplified-Chinese faces appended so lang="zh-CN" picks Han glyphs
+ * deliberately rather than by platform accident. English rendering is
+ * untouched: app.js sets the lang attribute at startup, and this block
+ * only answers to it. */
+:root:lang(zh) {
+  --or-font-sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }

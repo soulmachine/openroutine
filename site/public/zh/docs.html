@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>文档 — OpenRoutine</title>
+<meta name="description" content="OpenRoutine 参考文档：任务文件的 frontmatter、配置项、CLI、REST API，以及在 launchd 或 systemd 下部署守护进程。">
+<link rel="canonical" href="https://openroutine.dev/zh/docs">
+<link rel="alternate" hreflang="en" href="https://openroutine.dev/docs">
+<link rel="alternate" hreflang="zh" href="https://openroutine.dev/zh/docs">
+<link rel="alternate" hreflang="x-default" href="https://openroutine.dev/docs">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/styles.css">
+
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://openroutine.dev/zh/docs">
+<meta property="og:title" content="文档 — OpenRoutine">
+<meta property="og:description" content="任务文件的 frontmatter、配置项、CLI、REST API，以及在 launchd 或 systemd 下部署守护进程。">
+<meta property="og:image" content="https://openroutine.dev/og-zh.png">
+<meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<a class="skip-link" href="#main">跳到正文</a>
+
+<header class="masthead">
+  <div class="wrap">
+    <a class="wordmark" href="/zh/">
+      <img src="/favicon-192.png" alt="" width="26" height="26">
+      OpenRoutine
+    </a>
+    <nav>
+      <a href="/zh/docs" aria-current="page">文档</a>
+      <a href="https://github.com/soulmachine/openroutine">GitHub</a>
+      <a href="/docs" data-lang-switch="en" lang="en" hreflang="en">English</a>
+    </nav>
+  </div>
+</header>
+
+<main class="docs" id="main">
+
+  <section>
+    <div class="wrap">
+      <h1>文档</h1>
+      <p class="lede">
+        OpenRoutine 的一切都由两个纯文本文件驱动：一个你拥有的 Markdown 任务文件，和一个
+        写明哪些文件要运行、智能体是什么的 <code>config.toml</code>。
+      </p>
+      <ul class="docs-toc">
+        <li><a href="#install">安装</a></li>
+        <li><a href="#start">最初五分钟</a></li>
+        <li><a href="#tasks">任务文件</a></li>
+        <li><a href="#config">配置</a></li>
+        <li><a href="#cli">CLI 参考</a></li>
+        <li><a href="#api">REST API</a></li>
+        <li><a href="#deploy">部署</a></li>
+        <li><a href="#concepts">概念</a></li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>安装</h2>
+      <p class="section-note">
+        需要 Rust 工具链；仅支持 macOS 和 Linux。明确不支持 Windows。
+      </p>
+      <pre><code>git clone https://github.com/soulmachine/openroutine
+cd openroutine
+cargo install --path .       <span class="c"># 或：cargo build --release</span>
+openroutine init             <span class="c"># 写入配置，打印一个示例任务</span>
+openroutine add hello.md     <span class="c"># 注册一个任务文件</span>
+openroutine list             <span class="c"># 查看哪些任务会运行</span>
+openroutine serve            <span class="c"># 在前台运行调度器</span>
+openroutine install          <span class="c"># 或注册为开机服务，无需 sudo</span></code></pre>
+      <p>
+        <code>init</code> 写入 <code>~/.config/openroutine/config.toml</code>，并打印一个可以
+        照抄的示例任务。把它以 Markdown 存到任何地方，再用 <code>openroutine add</code>
+        注册即可。没有其他需要配置的东西。
+      </p>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap">
+      <h2>最初五分钟</h2>
+      <p class="section-note"><code>openroutine init</code> 打印的内容（原样为英文），以及接下来该做什么。</p>
+      <pre><code>Wrote config …/config.toml
+
+A task is one markdown file. A starter, to save as hello.md:
+
+---
+name: hello
+description: Say hello, nightly
+cron: "0 9 * * *"
+---
+
+Say hello, then stop. This is a sample task — edit it freely.
+
+Try:  openroutine add hello.md          # register it
+      openroutine list                  # what would run
+      openroutine run hello --dry-run   # what it would do
+      openroutine serve                 # start the scheduler
+
+Nothing fires until a daemon is running. `openroutine install`
+registers one with your service manager, without sudo.</code></pre>
+      <p>
+        <code>run --dry-run</code> 是最先值得一试的命令。它渲染出完全解析后的执行计划 —
+        命令行、环境变量、工作目录、接下来的触发时刻 — 而不启动任何东西。它是一次读取，
+        不是一次运行；什么都不会被记录。
+      </p>
+    </div>
+  </section>
+
+  <section id="tasks">
+    <div class="wrap">
+      <h2>任务文件</h2>
+      <p class="section-note">
+        任务就是单个 Markdown 文件，用 <code>openroutine add</code> 注册。frontmatter 是元数据，
+        正文是提示词，这个文件就是任务的完整定义。任务的 <strong>id</strong> 从 frontmatter 的
+        <code>name</code> 推导而来，在整台机器上唯一 — 重命名或移动文件不改变任何东西；
+        而把 <code>name:</code> 改成会推导出不同 id 的内容，就是创建了一个新任务。
+      </p>
+      <pre><code><span class="k">---</span>
+<span class="k">name:</span> hello
+<span class="k">description:</span> Say hello, nightly
+<span class="k">cron:</span> "0 9 * * *"
+<span class="k">---</span>
+
+Say hello, then stop. This is a sample task — edit or delete it.</code></pre>
+
+      <h3>frontmatter 键</h3>
+      <div class="scroller">
+        <table class="keys">
+          <caption>
+            任务文件接受的 frontmatter 键。<code>name</code>、<code>description</code> 和非空的
+            正文是必填的；其余键全部可选。
+          </caption>
+          <thead><tr><th scope="col">键</th><th scope="col">作用</th></tr></thead>
+          <tbody>
+            <tr><td><code>name</code></td><td>任务的名字，用自然语言写 — <code>X timeline domain hunter</code> 也可以。<strong>id</strong> 由它推导：转小写，连续空白变成单个连字符，<code>[a-z0-9_-]</code> 之外的字符被丢弃，两端修剪 — 得到 <code>x-timeline-domain-hunter</code>。推导出的 id 必须为 2–50 个字符，且包含字母或数字。必填。</td></tr>
+            <tr><td><code>description</code></td><td>任务是做什么的。显示在 CLI 和 Web 界面里。必填。</td></tr>
+            <tr><td><code>cron</code></td><td>一个 crontab 表达式，例如 <code>"0 2 * * *"</code>。与 <code>at</code> 互斥。</td></tr>
+            <tr><td><code>at</code></td><td>一个单独的时刻，RFC 3339 格式。触发一次，之后任务变为已完成。与 <code>cron</code> 互斥。</td></tr>
+            <tr><td><code>catch_up</code></td><td>补跑守护进程离线期间错过的一个时点，前提是它还没过时到不值得跑。默认关闭。</td></tr>
+            <tr><td><code>disabled</code></td><td>在文件本身里关掉 — 一次可评审的提交，而不是不可见的机器状态。完全不参与调度，所以既不积累时点也不产生跳过 — 而且因为它从不运行，它永远不会重新读取自己：重新打开需要一次 <code>openroutine reload</code>。</td></tr>
+            <tr><td><code>agent</code></td><td>由哪个已配置的智能体运行它。缺省时回落到 <code>default_agent</code>。</td></tr>
+            <tr><td><code>jitter</code></td><td>触发时刻允许被推移多远，确定性地。接受 <code>2m</code>、<code>30s</code>，或裸写 <code>0</code> 表示精确的时点。</td></tr>
+            <tr><td><code>cwd</code></td><td>智能体的起始目录。绝对路径直接用；相对路径相对任务文件所在目录解析，而后者也是默认值。</td></tr>
+            <tr><td><code>model</code></td><td>通过智能体模板的 <code>{model}</code> 占位符注入，作为单个参数。</td></tr>
+            <tr><td><code>permission_mode</code></td><td>通过 <code>{permission_mode}</code> 占位符注入，作为单个参数。</td></tr>
+            <tr><td><code>env</code></td><td>本任务的环境变量，叠加在配置自身的环境之上。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">
+        <strong>时长</strong>接受 <code>30s</code>、<code>5m</code>、<code>2h</code>、
+        <code>1d</code>，或裸写的秒数。
+      </p>
+      <p class="note">
+        <strong>正文就是提示词</strong> — 对智能体无话可说的任务会被拒绝。
+      </p>
+      <p class="note">
+        <strong>既没有 <code>cron</code> 也没有 <code>at</code> 的任务是一次性任务</strong> —
+        守护进程接手后它立刻运行一次，然后显示为已完成。编辑文件后，它会在下一次
+        <code>openroutine reload</code> 时重新上膛：已完成的任务不会再运行，所以它无法
+        自己注意到这次编辑。
+      </p>
+      <p class="note">
+        <strong>任务在运行时重新读取自己的文件。</strong>一次运行开始的那一刻 — 无论按调度、
+        被手动触发，还是补跑 — 任务会检查自己文件的 mtime，mtime 变了再查内容摘要；如果定义
+        变了，运行的就是新定义。所以你刚改好的提示词就是实际执行的那一个。没有任何监视，
+        也没有任何轮询：没有定时器，没有文件监听，不碰其他任务的文件，也不重读配置。
+      </p>
+      <p class="note">
+        <strong>其余一切都靠重载（reload）。</strong>守护进程在启动时，以及
+        <code>openroutine reload</code> 或 <code>POST /v1/reload</code> 要求时，重新读取配置和
+        每个已注册的文件；<code>add</code> 和 <code>remove</code> 会自己请求一次。重载是让一次
+        编辑出现在 <code>list</code>、<code>status</code> 和 Web 界面里的方式，也是一个不会再
+        运行的任务能注意到编辑的唯一途径 — 已完成的一次性任务只在重载时重新上膛，
+        <code>disabled: true</code> 的任务也无法自己打开自己，因为两者都不再运行。
+      </p>
+      <p class="note">
+        <strong>在触发时刻</strong>，一个已经变得无法应答这个时点的定义会撤回它，而不是运行它：
+        不再能解析的、现在写着 <code>disabled: true</code> 的、以及改了名字的，都会跳过这次
+        运行并等待一次重载，因为身份变更属于注册表层面的事。cron 时点即使已不在新调度里也照常
+        运行 — 它在被安排时是正当到期的 — 而 <code>at:</code> 在到点之前被改动过的一次性任务
+        会被跳过，并在新写的时刻重新上膛。每一种都记录为一次跳过，原因是
+        <code>definition-changed</code>。
+      </p>
+      <p class="note warn">
+        <code>on_failure</code> 和 <code>tz</code> 在 v1 模式中已声明，但<strong>尚未生效</strong>。
+        OpenRoutine 会点名警告它们，而不是称之为未知键，因为一个静默无效的键是最糟的结果。
+      </p>
+    </div>
+  </section>
+
+  <section id="config">
+    <div class="wrap">
+      <h2>配置</h2>
+      <p class="section-note">
+        由人拥有、可手工编辑，位于 <code>~/.config/openroutine/config.toml</code>。
+        以下是 <code>openroutine init</code> 写入的内容（注释原样为英文）：
+      </p>
+      <pre><code><span class="c"># openroutine — https://openroutine.dev</span>
+
+<span class="c"># The agent a task gets when it names none.</span>
+default_agent = "claude"
+
+<span class="c"># The task files to schedule. `openroutine add` appends here.</span>
+tasks = []
+
+<span class="c"># An agent is a command template. {prompt} is substituted as a</span>
+<span class="c"># single argument; without it, the prompt arrives on stdin.</span>
+[agents.claude]
+cmd = "claude -p {prompt}"
+
+[agents.codex]
+cmd = "codex exec {prompt}"</code></pre>
+
+      <h3>配置键</h3>
+      <div class="scroller">
+        <table class="keys">
+          <caption>
+            全部配置键，以及键缺省时使用的值。
+          </caption>
+          <thead><tr><th scope="col">键</th><th scope="col">默认值</th><th scope="col">作用</th></tr></thead>
+          <tbody>
+            <tr><td><code>tasks</code></td><td><code>[]</code></td><td>已注册的任务文件，绝对路径。<code>add</code> 和 <code>remove</code> 会编辑这个列表；手工编辑同样有效。</td></tr>
+            <tr><td><code>agents.&lt;name&gt;.cmd</code></td><td>—</td><td>命令模板。<code>{prompt}</code> 作为单个参数替换，绝不拼进 shell 字符串；没有它时提示词从 stdin 传入。<code>{model}</code> 和 <code>{permission_mode}</code> 的行为相同。</td></tr>
+            <tr><td><code>default_agent</code></td><td>未设置</td><td>没有指名智能体的任务用它。默认未设置，所以省略 <code>agent:</code> 会让任务处于损坏状态，直到你主动设定。</td></tr>
+            <tr><td><code>env</code></td><td>空</td><td>交给每次运行的环境变量，叠加在登录 shell 自身之上、任务自己设置的之下。</td></tr>
+            <tr><td><code>max_parallel</code></td><td>未设置</td><td>全部任务合计同时允许多少次运行。未设置意味着硬件能扛多少是多少。</td></tr>
+            <tr><td><code>max_runs_per_task</code></td><td><code>50</code></td><td>每个任务在磁盘上保留多少次运行记录。</td></tr>
+            <tr><td><code>max_log_bytes</code></td><td><code>100 MiB</code></td><td>一次运行的输出保留多少之后开始截断日志。</td></tr>
+            <tr><td><code>idle_timeout</code></td><td><code>15m</code></td><td>一次运行的智能体多久没有输出后，其整个进程组会被终止；写 <code>none</code> 则允许无限期沉默。从最后一次输出起算，而不是从开始起算 — 持续在输出的运行永远不会被打断，无论跑多久，总运行时长也没有上限。机器级设置：任务不能自行设定。</td></tr>
+            <tr><td><code>bind</code></td><td>回环地址</td><td>本地 API 监听的位置。可以放宽，但不建议，而且永远不会取消令牌要求。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        运行状态 — 上次运行时间、当时安排的时点、记录的跳过、暂停开关 — 由机器拥有，存放在
+        你仓库之外的一个 <code>scheduled-tasks.json</code> 里。删掉它，丢的是运行历史，
+        不是任务。
+      </p>
+    </div>
+  </section>
+
+  <section id="cli">
+    <div class="wrap">
+      <h2>CLI 参考</h2>
+      <p class="section-note">
+        <code>openroutine --help</code> 可看到同一份列表。全局的 <code>--config &lt;PATH&gt;</code>
+        可在任何命令上覆盖 XDG 配置路径。
+      </p>
+      <div class="scroller">
+        <table class="keys">
+          <caption>
+            <code>openroutine</code> 的全部子命令。
+          </caption>
+          <thead><tr><th scope="col">命令</th><th scope="col">作用</th></tr></thead>
+          <tbody>
+            <tr><td><code>serve</code></td><td>在前台运行调度器。</td></tr>
+            <tr><td><code>list</code></td><td>显示每个任务、它的调度和健康状态。</td></tr>
+            <tr><td><code>add &lt;file.md&gt;</code></td><td>注册一个任务文件，纳入调度。校验严格 — 解析不了的文件会被拒绝，不会注册。</td></tr>
+            <tr><td><code>remove &lt;name-or-path&gt;</code></td><td>注销一个任务。<code>--delete</code> 连文件一起删除；不加它文件仍归你。</td></tr>
+            <tr><td><code>reload [task]</code></td><td>让正在运行的守护进程重新读取配置和每个已注册的文件 — 无条件地，不管有没有变化 — 并报告每个任务的健康状态。<code>add</code> 和 <code>remove</code> 会自动触发一次。不会再运行的任务要注意到编辑，靠的就是它。</td></tr>
+            <tr><td><code>init</code></td><td>写入初始配置并打印一个示例任务。不注册任何东西。</td></tr>
+            <tr><td><code>status</code></td><td>汇总守护进程的状态，以及它将要运行的东西。</td></tr>
+            <tr><td><code>run &lt;task&gt;</code></td><td>立即触发一个任务。<code>--dry-run</code> 只描述这次运行而不启动它；<code>--text</code> 为本次运行附加上下文 — 是给智能体的信息，绝不是指令，也无法重新定义任务。</td></tr>
+            <tr><td><code>logs &lt;task&gt;</code></td><td>显示任务最近一次运行。<code>--follow</code> 在运行继续输出时持续打印。</td></tr>
+            <tr><td><code>pause [task]</code></td><td>暂停一个任务，或用 <code>--all</code> 暂停全部。</td></tr>
+            <tr><td><code>resume [task]</code></td><td>恢复一个任务，或用 <code>--all</code> 恢复全部。</td></tr>
+            <tr><td><code>install</code></td><td>把守护进程注册到你的服务管理器，无需 sudo。<code>--print</code> 只显示将要写入的内容，不实际写入。</td></tr>
+            <tr><td><code>uninstall</code></td><td>注销守护进程。配置、状态和任务原样保留。</td></tr>
+            <tr><td><code>dashboard</code></td><td>在浏览器中打开本地 Web 界面，已登录。</td></tr>
+            <tr><td><code>token</code></td><td>打印 API 令牌。<code>--rotate</code> 更换令牌 — 使用旧令牌的一切都会停止工作。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="api">
+    <div class="wrap">
+      <h2>REST API</h2>
+      <p class="section-note">
+        守护进程监听 <code>127.0.0.1:7373</code>，由 <code>openroutine token</code>
+        输出的 Bearer 令牌保护。
+      </p>
+      <pre><code>curl -X POST http://127.0.0.1:7373/v1/tasks/todo-digest/fire \
+  -H "Authorization: Bearer $(openroutine token)" \
+  -d '{"text": "Sentry alert SEN-4521 fired in prod."}'</code></pre>
+      <p class="note">
+        可选的 <code>text</code> 以“调用方提供的上下文”标注后送达智能体，而不是作为指令 —
+        任何能访问端点的一方都能发送 text，因此 text 必须无法重新定义任务本身。
+      </p>
+
+      <h3>端点</h3>
+      <div class="scroller">
+        <table class="keys">
+          <caption>
+            本地 API 提供的全部路由。
+          </caption>
+          <thead><tr><th scope="col">路由</th><th scope="col">作用</th></tr></thead>
+          <tbody>
+            <tr><td><code>GET /v1/tasks</code></td><td>每个已注册的任务，带调度和下次触发时刻。</td></tr>
+            <tr><td><code>GET /v1/tasks/{id}</code></td><td>单个任务的详情。</td></tr>
+            <tr><td><code>GET /v1/tasks/{id}/runs</code></td><td>该任务的运行历史。</td></tr>
+            <tr><td><code>POST /v1/tasks/{id}/fire</code></td><td>发起一次运行。返回运行 id 和它的日志路径。</td></tr>
+            <tr><td><code>GET /v1/runs/{id}/{run}</code></td><td>单次运行的详情。</td></tr>
+            <tr><td><code>GET /v1/runs/{id}/{run}/log</code></td><td>该次运行的日志。</td></tr>
+            <tr><td><code>GET /v1/runs/{id}/{run}/log/stream</code></td><td>通过 SSE 实时跟踪日志。</td></tr>
+            <tr><td><code>POST /v1/runs/{id}/{run}/cancel</code></td><td>终止一次进行中的运行。</td></tr>
+            <tr><td><code>POST /v1/tasks/{id}/pause</code></td><td>暂停一个任务。</td></tr>
+            <tr><td><code>POST /v1/tasks/{id}/resume</code></td><td>恢复一个任务。</td></tr>
+            <tr><td><code>POST /v1/pause</code></td><td>暂停这台机器上的所有任务。</td></tr>
+            <tr><td><code>POST /v1/resume</code></td><td>恢复全部。</td></tr>
+            <tr><td><code>POST /v1/reload</code></td><td>重新读取配置和每个已注册的任务文件；返回每个任务的健康状态。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="deploy">
+    <div class="wrap">
+      <h2>部署</h2>
+      <p class="section-note">
+        要让守护进程在一台你不守着的机器上无人值守地运行 — 桌下的 Mac mini、一台家用服务器 —
+        把它注册到系统的服务管理器。
+      </p>
+      <pre><code>cargo install --path .        <span class="c"># 安装到一个稳定路径；见下文</span>
+openroutine init              <span class="c"># 配置；打印一个示例任务</span>
+openroutine add hello.md      <span class="c"># 用一个任务验证它能工作</span>
+openroutine install           <span class="c"># 注册到 launchd/systemd，无需 sudo</span>
+openroutine status            <span class="c"># daemon: running (pid …)</span></code></pre>
+      <p>
+        <code>install</code> 记录的是执行注册的那个二进制的路径，所以要用安装后的副本运行它，
+        而不是 <code>target/release/openroutine</code> — 一次 <code>cargo clean</code> 不应该能
+        拆掉你的调度器。它写入的是按用户的服务，从不要求 sudo。<code>openroutine install
+        --print</code> 精确显示它会写什么、会运行什么，而不实际写入。
+      </p>
+
+      <h3>你的智能体必须在登录 shell 的 PATH 上</h3>
+      <p>
+        守护进程通过<em>登录</em> shell 运行每个智能体，所以一次运行拿到的
+        <code>PATH</code>、shim 和 API 密钥与你的终端相同。登录 shell 不等于交互式 shell：
+        zsh 读 <code>.zshenv</code> 和 <code>.zprofile</code> 但<strong>不读</strong>
+        <code>.zshrc</code>；bash 读 <code>.bash_profile</code> 但不读 <code>.bashrc</code>。
+        所以一个只靠 <code>.zshrc</code> 放上 <code>PATH</code> 的智能体 — 装在
+        <code>~/.local/bin</code> 里的是最常见的情况 — 你手工测试时找得到，launchd
+        启动守护进程后就不见了：
+      </p>
+      <pre><code>zsh:1: command not found: claude</code></pre>
+      <p>
+        <code>openroutine list</code> 会在你踩坑之前发出警告。它按服务管理器的方式采样登录
+        shell — <code>PATH</code> 以守护进程继承的裸
+        <code>/usr/bin:/bin:/usr/sbin:/sbin</code> 起步，绝不用你终端恰好有的
+        <code>PATH</code> — 所以它替守护进程回答，而不是替你回答：
+      </p>
+      <pre><code>warning: "claude" is on your PATH here but not under a service manager, so
+scheduled Runs will fail; move its PATH export into your login profile</code></pre>
+      <p>
+        修复方式：把 <code>PATH</code> 导出移进 <code>.zprofile</code>（顺带把 SSH 和 cron
+        会话也修好了），或者用绝对路径指名智能体：
+      </p>
+      <pre><code>[agents.claude]
+cmd = "/Users/you/.local/bin/claude -p {prompt}"</code></pre>
+      <p>按守护进程将来看到它的方式验证 — 一个不继承你终端任何环境的登录 shell：</p>
+      <pre><code>env -i HOME="$HOME" SHELL=/bin/zsh PATH=/usr/bin:/bin /bin/zsh -lc 'command -v claude'</code></pre>
+
+      <h3>macOS</h3>
+      <p>
+        <code>install</code> 向 <code>~/Library/LaunchAgents/</code> 写入一个
+        <strong>LaunchAgent</strong>，所以守护进程在<em>登录</em>时启动，而不是开机时；它挂掉后
+        launchd 会重启它。在无人值守的机器上，请搭配自动登录（系统设置 → 用户与群组 →
+        自动登录为），这要求关闭 FileVault。
+      </p>
+      <p>
+        自动登录不只是为了让守护进程启动。智能体 CLI 把凭据保存在你的<strong>登录钥匙串</strong>里，
+        而钥匙串靠图形界面登录来解锁 — 没有它就启动的服务会发现钥匙串锁着，智能体报告自己
+        未登录。这也是 <code>install</code> 不写 root LaunchDaemon 的原因：在任何人登录之前
+        启动，恰恰是智能体无法认证的状态，LaunchDaemon 买到的那一件事正是弄坏它的那一件事。
+        这笔交换反过来也成立，而且是真实的代价：自动登录加上关闭 FileVault，意味着物理接触
+        就是一个已登录的桌面。
+      </p>
+      <p>顺手把机器调成不会睡过自己的调度：</p>
+      <pre><code>sudo pmset -c sleep 0 displaysleep 0 disksleep 0  <span class="c"># 永不休眠</span>
+sudo pmset -c autorestart 1 womp 1                <span class="c"># 断电恢复后自动回来</span>
+launchctl print gui/$(id -u)/dev.openroutine.daemon | grep state</code></pre>
+
+      <h3>Linux</h3>
+      <p>
+        <code>install</code> 写入一个 systemd 用户单元并启用 lingering，所以守护进程在开机时
+        启动、无需登录会话 — 唯一一个“无需登录”不带星号成立的平台。
+      </p>
+      <pre><code>systemctl --user status dev.openroutine.daemon
+journalctl --user -u dev.openroutine.daemon -f</code></pre>
+
+      <h3>确认它扛得住</h3>
+      <pre><code>openroutine run &lt;task&gt;   <span class="c"># 一次真实的端到端运行</span>
+openroutine logs &lt;task&gt;  <span class="c"># 智能体实际打印了什么</span></code></pre>
+      <p>
+        直接杀掉守护进程是公平的测试：服务管理器应当在几秒内以新 pid 把它带回来。
+        <code>openroutine uninstall</code> 注销它，你的配置、状态和任务原样保留。
+      </p>
+    </div>
+  </section>
+
+  <section id="concepts">
+    <div class="wrap">
+      <h2>概念</h2>
+      <p class="section-note">
+        CLI、界面和文档共用的词汇表。这里的精确是有意为之 — 其中多数词都有一个含义
+        微妙不同的近义词。术语本身保留 CLI 与界面实际使用的英文原词。
+      </p>
+      <div class="scroller">
+        <table class="keys">
+          <caption>
+            CLI、Web 界面和本文档以完全相同方式使用的术语。
+          </caption>
+          <thead><tr><th scope="col">术语</th><th scope="col">含义</th></tr></thead>
+          <tbody>
+            <tr><td><code>Task</code>（任务）</td><td>一个智能体工作单元，完全由一个用 <code>openroutine add</code> 注册的 Markdown 文件定义。<code>name</code> 是给人看的自然语言；id 从这个名字推导，是一切索引的依据。重命名或移动文件不改变任何东西。</td></tr>
+            <tr><td><code>Id</code></td><td>任务的身份，从 <code>name</code> 推导：转小写，连续空白变成单个连字符，<code>[a-z0-9_-]</code> 之外的字符丢弃，两端修剪。整台机器上唯一 — 两个名字推导出同一个 id 会被拒绝，而不是被调和。状态文件记录的是它，<code>runs/&lt;id&gt;/</code> 以它命名，API 路径携带它，CLI 也应答它。</td></tr>
+            <tr><td><code>Agent</code>（智能体）</td><td>一个接受提示词的已配置命令模板。任何 CLI 都可以；OpenRoutine 自己从不调用模型 API。</td></tr>
+            <tr><td><code>Daemon</code>（守护进程）</td><td>那个唯一的长驻进程，同时是调度器、运行器、API 和界面。操作系统只负责监管它，不调度任何东西。</td></tr>
+            <tr><td><code>Reload</code>（重载）</td><td>守护进程重新读取配置和每个已注册文件的时刻，不管有没有变化 — 在启动时、在 <code>openroutine reload</code> 时、或在一次 <code>add</code> 或 <code>remove</code> 之后。一个不会再运行的任务 — 已完成、已停用或已损坏 — 能注意到自己被编辑过的唯一途径。</td></tr>
+            <tr><td><code>Refresh</code>（刷新）</td><td>任务在即将运行的那一刻 — 按时点或被触发 — 对自己文件做的检查：先看 mtime 变没变，再看摘要变没变，然后才采用新定义，用于这一次运行。只限运行路径、只限这一个文件 — 没有监视，没有轮询，从不触发的任务也从不刷新。</td></tr>
+            <tr><td><code>Tick</code>（时点）</td><td>任务调度到期的一个瞬间。每个时点都恰好变成一次运行或一次跳过。</td></tr>
+            <tr><td><code>Run</code>（运行）</td><td>智能体对任务提示词的一次执行，由调度的时点或一次触发产生。</td></tr>
+            <tr><td><code>Skip</code>（跳过）</td><td>没有运行的时点，连同原因一起记录：<code>overlap</code>、<code>daemon-down</code>、<code>missed</code>、<code>paused</code>，或 <code>definition-changed</code> — 刷新发现这个时点已无法应答。绝不无声 — 每个时点都恰好变成一次运行或一次跳过。</td></tr>
+            <tr><td><code>Fire</code>（触发）</td><td>在调度之外按需发起一次运行 — 通过 API 或界面。</td></tr>
+            <tr><td><code>Dry run</code>（演练）</td><td>渲染任务完全解析后的执行计划，而不启动任何东西。是一次读取，不是一次运行；什么都不记录。</td></tr>
+            <tr><td><code>Idle timeout</code>（静默超时）</td><td>一次运行的智能体可以沉默多久。从最后一次输出起算，所以肉眼可见还在推进的工作无论多久都不会被打断，而挂死的运行会被回收。到期时运行的整个进程组被终止，运行记录为超时 — 绝不悬着不管。</td></tr>
+            <tr><td><code>Jitter</code>（抖动）</td><td>任务时点与实际触发时刻之间的确定性偏移，从任务 id 推导，因此在多次运行之间从不改变。</td></tr>
+            <tr><td><code>One-shot</code>（一次性任务）</td><td>没有 <code>cron</code> 的任务。有 <code>at:</code> 时在那个时刻触发一次；没有时在守护进程接手后立即触发一次。之后都变为已完成。</td></tr>
+            <tr><td><code>Completed</code>（已完成）</td><td>已经应答过自己时刻的一次性任务。纯机器状态：编辑文件就再次给了它事做 — 在下一次重载时，因为不会运行的任务无法刷新。</td></tr>
+            <tr><td><code>Catch-up</code>（补跑）</td><td>让任务选择补跑守护进程离线期间错过的一个时点。默认关闭。</td></tr>
+            <tr><td><code>Disabled</code>（已停用）</td><td>在自己的 frontmatter 里被关掉。完全不参与调度，所以不积累时点也不产生跳过 — 与已暂停的任务不同。</td></tr>
+            <tr><td><code>Paused</code>（已暂停）</td><td>在运行时被按住。机器拥有的状态，从不属于定义；任务只有在既未停用也未暂停时才运行。被按住期间到来的时点会变成一次跳过，而不是一段空白。</td></tr>
+            <tr><td><code>Interrupted</code>（已中断）</td><td>守护进程在其结束前消失了的运行。在下一次启动时补记，所以不会有运行永远声称自己还在运行。</td></tr>
+            <tr><td><code>Ready</code>（就绪）</td><td>定义能解析、能校验、指名的智能体存在的任务。时点能产生运行的唯一状态。</td></tr>
+            <tr><td><code>Broken</code>（损坏）</td><td>文件缺失，或定义解析、校验失败的已注册任务。总是连同错误一起醒目地展示；绝不被无声地移出调度。</td></tr>
+            <tr><td><code>Familiar</code>（熟识）</td><td>定义与上次开始运行时一致的任务。新的或被编辑过的任务会被标记出来 — 注册一个文件即是信任能编辑它的人，所以到来的变更被公示，而不是被拦下。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="closer">
+      如果 OpenRoutine 明天消失了，你的任务仍是清晰可读的 Markdown，随时可以交给
+      下一个运行它们的东西。
+    </p>
+    <p class="meta">
+      <span>MIT 许可证</span>
+      <span>© 2026 Frank Dai</span>
+      <a href="https://github.com/soulmachine/openroutine">GitHub</a>
+      <a href="/zh/">首页</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const KEY = "or-lang";
+  const swap = document.querySelector("a[data-lang-switch]");
+  if (!swap) return;
+  swap.addEventListener("click", () => {
+    try { localStorage.setItem(KEY, swap.getAttribute("data-lang-switch")); } catch {}
+  });
+  if (!document.documentElement.lang.startsWith("en")) return;
+  let saved = null;
+  try { saved = localStorage.getItem(KEY); } catch {}
+  const want = saved || navigator.language || "";
+  if (want.toLowerCase().startsWith("zh")) location.replace(swap.href);
+})();
+</script>
+</body>
+</html>

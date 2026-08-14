@@ -9,69 +9,70 @@
 <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
-<a class="skip-link" href="#main">Skip to content</a>
+<a class="skip-link" href="#main" data-i18n="skip">Skip to content</a>
 
 <header>
   <h1><img class="mark" src="/assets/favicon-192.png" alt="" width="26" height="26">OpenRoutine</h1>
-  <p class="sub">Your AI agents' crontab, as markdown. Everything here is read from files on this machine.</p>
+  <p class="sub" data-i18n="tagline">Your AI agents' crontab, as markdown. Everything here is read from files on this machine.</p>
   <div id="banner" role="status" hidden></div>
 </header>
 
 <main id="main">
   <section id="tasks-view">
     <div class="bar">
-      <h2>Tasks</h2>
-      <label class="toggle"><input type="checkbox" id="show-completed"> show completed</label>
+      <h2 data-i18n="tasks.heading">Tasks</h2>
+      <label class="toggle"><input type="checkbox" id="show-completed"> <span data-i18n="show-completed">show completed</span></label>
       <button id="pause-all" class="ghost">Pause everything</button>
     </div>
     <div class="scroller">
       <table id="tasks">
-        <caption>Every registered task, with the moment its schedule next comes due.</caption>
+        <caption data-i18n="tasks.caption">Every registered task, with the moment its schedule next comes due.</caption>
         <thead>
           <tr>
-            <th scope="col">Task</th>
-            <th scope="col">Description</th>
-            <th scope="col">Schedule</th>
-            <th scope="col">Next</th>
-            <th scope="col">Status</th>
+            <th scope="col" data-i18n="th.task">Task</th>
+            <th scope="col" data-i18n="th.description">Description</th>
+            <th scope="col" data-i18n="th.schedule">Schedule</th>
+            <th scope="col" data-i18n="th.next">Next</th>
+            <th scope="col" data-i18n="th.status">Status</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
     </div>
-    <p id="empty" class="empty" hidden>No tasks yet. Register a task file with <code>openroutine add &lt;file.md&gt;</code>.</p>
+    <p id="empty" class="empty" hidden data-i18n="empty">No tasks yet. Register a task file with <code>openroutine add &lt;file.md&gt;</code>.</p>
   </section>
 
   <section id="task-view" hidden>
-    <button class="ghost" id="back">&larr; all tasks</button>
+    <button class="ghost" id="back" data-i18n="back">&larr; all tasks</button>
     <h2 id="task-title"></h2>
     <p class="path" id="task-path"></p>
     <div class="bar">
-      <button id="run-now">Run now</button>
+      <button id="run-now" data-i18n="run-now">Run now</button>
       <button id="pause-task" class="ghost"></button>
     </div>
-    <h3>Runs</h3>
+    <h3 data-i18n="runs.heading">Runs</h3>
     <div class="scroller">
       <table id="runs">
-        <caption>Every run kept on disk for this task, most recent first.</caption>
+        <caption data-i18n="runs.caption">Every run kept on disk for this task, most recent first.</caption>
         <thead>
           <tr>
-            <th scope="col">Started</th>
-            <th scope="col">Trigger</th>
-            <th scope="col">Status</th>
-            <th scope="col"><span class="visually-hidden">Actions</span></th>
+            <th scope="col" data-i18n="th.started">Started</th>
+            <th scope="col" data-i18n="th.trigger">Trigger</th>
+            <th scope="col" data-i18n="th.status">Status</th>
+            <th scope="col"><span class="visually-hidden" data-i18n="th.actions">Actions</span></th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
     </div>
-    <p id="no-runs" class="empty" hidden>Nothing has run yet.</p>
+    <p id="no-runs" class="empty" hidden data-i18n="no-runs">Nothing has run yet.</p>
     <pre id="log" hidden></pre>
   </section>
 </main>
 
 <footer>
-  <p>Tasks are edited as files. This page never writes one.</p>
+  <p data-i18n="footer">Tasks are edited as files. This page never writes one.</p>
+  <button id="lang" class="ghost" hidden></button>
 </footer>
 
 <script type="module" src="/assets/app.js"></script>
