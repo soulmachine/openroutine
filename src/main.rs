@@ -26,7 +26,8 @@ const TICK_INTERVAL: Duration = Duration::from_secs(1);
 #[command(
     name = "openroutine",
     version,
-    about = "Your AI agents' crontab, as markdown"
+    about = "Your AI agents' crontab, as markdown",
+    after_help = "Homepage: https://github.com/soulmachine/openroutine"
 )]
 struct Cli {
     /// Config file to use (defaults to the XDG config path).
