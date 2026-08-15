@@ -1,0 +1,93 @@
+# Pushing a v* tag releases that version everywhere at once: crates.io, a
+# GitHub release with prebuilt binaries, and npm. The npm package downloads
+# from the GitHub release at install time, so npm publishes only after the
+# release exists. Secrets: CARGO_REGISTRY_TOKEN, NPM_TOKEN.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # The whole release fails fast if the tag, Cargo.toml, and npm/package.json
+  # disagree about the version — nothing partial is ever published.
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: versions agree
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          grep -q "^version = \"$VERSION\"\$" Cargo.toml
+          node -e "process.exit(require('./npm/package.json').version === '$VERSION' ? 0 : 1)"
+      - run: rustup update --no-self-update stable
+      - run: cargo test --locked
+
+  crates:
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update --no-self-update stable
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, runner: macos-14 }
+          # Cross-compiled: the arm64 runner carries the x64 macOS SDK too.
+          - { target: x86_64-apple-darwin, runner: macos-14 }
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update --no-self-update stable
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: >
+          tar -czf openroutine-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz
+          -C target/${{ matrix.target }}/release openroutine
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: "*.tar.gz"
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - run: >
+          gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz
+          --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  npm:
+    needs: release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+      - run: cp LICENSE npm/
+      - run: npm publish ./npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

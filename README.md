@@ -43,10 +43,14 @@ The trade is honest in every direction: Routines gives you cloud execution, GitH
 
 ## Install
 
-Requires a Rust toolchain; macOS and Linux only (Windows is an explicit non-goal).
+macOS and Linux only (Windows is an explicit non-goal). The npm package
+installs a prebuilt binary; the cargo routes build from source and need a
+Rust toolchain.
 
 ```bash
-cargo install --path .          # or: cargo build --release
+npm install -g openroutine      # prebuilt binary, no Rust needed
+cargo install openroutine       # or build from crates.io
+cargo install --path .          # or build from a checkout
 openroutine init                # writes a config and prints a sample task
 openroutine add my-task.md      # register a task file you wrote
 openroutine list                # see what would run

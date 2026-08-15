@@ -1,0 +1,37 @@
+{
+  "name": "openroutine",
+  "version": "1.0.2",
+  "description": "Your AI agents' crontab, as markdown",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soulmachine/openroutine.git"
+  },
+  "homepage": "https://openroutine.dev",
+  "keywords": [
+    "cron",
+    "scheduler",
+    "agents",
+    "automation",
+    "ai",
+    "claude",
+    "codex"
+  ],
+  "bin": {
+    "openroutine": "bin/openroutine.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
