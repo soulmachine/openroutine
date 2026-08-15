@@ -2,6 +2,13 @@
 name = "openroutine"
 version = "1.0.2"
 edition = "2024"
+description = "Your AI agents' crontab, as markdown"
+license = "MIT"
+repository = "https://github.com/soulmachine/openroutine"
+homepage = "https://openroutine.dev"
+keywords = ["cron", "scheduler", "agents", "automation", "ai"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["site/", "skills/", "docs/", ".scratch/", ".github/", "npm/", "DECISIONS.md", "CONTEXT.md"]
 
 [dependencies]
 anyhow = "1.0.104"
