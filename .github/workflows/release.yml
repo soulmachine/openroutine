@@ -1,7 +1,9 @@
 # Pushing a v* tag releases that version everywhere at once: crates.io, a
 # GitHub release with prebuilt binaries, and npm. The npm package downloads
 # from the GitHub release at install time, so npm publishes only after the
-# release exists. Secrets: CARGO_REGISTRY_TOKEN, NPM_TOKEN.
+# release exists. crates.io authenticates with the CARGO_REGISTRY_TOKEN
+# secret; npm uses OIDC trusted publishing (configured on npmjs.com for this
+# repo and workflow), so no npm token exists anywhere.
 name: release
 
 on:
@@ -17,7 +19,7 @@ jobs:
   test:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: versions agree
         run: |
           set -eu
@@ -31,7 +33,7 @@ jobs:
     needs: test
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup update --no-self-update stable
       - run: cargo publish --locked
         env:
@@ -49,7 +51,7 @@ jobs:
           - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup update --no-self-update stable
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
@@ -67,7 +69,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -81,13 +83,30 @@ jobs:
   npm:
     needs: release
     runs-on: ubuntu-22.04
+    permissions:
+      id-token: write # the OIDC exchange with npm; there is no token secret
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          registry-url: "https://registry.npmjs.org"
+          node-version: 24
+      - name: npm is new enough for trusted publishing
+        run: |
+          # OIDC-based publishing needs npm >= 11.5.1; Node 24 bundles it,
+          # this asserts rather than assumes.
+          v="$(npm --version)"
+          printf '%s\n11.5.1\n' "$v" | sort -V | head -1 | grep -qx '11.5.1' \
+            || { echo "npm $v is older than 11.5.1"; exit 1; }
       - run: cp LICENSE npm/
-      - run: npm publish ./npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: publish, unless this version is already up
+        # The skip makes a re-run after a partial release idempotent — npm
+        # hard-fails on a version that already exists.
+        run: |
+          set -eu
+          version="$(node -p "require('./npm/package.json').version")"
+          if npm view "openroutine@$version" version >/dev/null 2>&1; then
+            echo "openroutine@$version is already on npm; skipping"
+          else
+            npm publish ./npm
+          fi
