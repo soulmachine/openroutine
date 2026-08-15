@@ -60,10 +60,11 @@ against the commit and its author, rather than as the `Manually deployed … Wra
 earlier hand-deploys produced. Every route answered afterwards: `/` 200, `/docs` 200,
 `/docs.html` 307, `/nope` 404, `/styles.css` 200, `/og.png` 200.
 
-The other half is unconfirmed: no code-only commit has been pushed since the watch path was set,
-so nothing has yet demonstrated that `site/*` suppresses a build. Watch the next Rust-only push —
-**Deployments** should stay unchanged. If a build starts anyway, the include pattern is matching
-more than intended; narrowing it is a one-field edit under Settings → Build.
+The other half is now confirmed too: on 2026-08-15 a run of Rust-only pushes to `main` (the
+v1.0.2 and v1.0.3 release work — nothing under `site/`) produced no build and no deployment;
+the latest deployment stayed the one from the previous `site/` commit. `site/*` suppresses
+exactly what it should. The sibling repo `agentstow/agentstow`, connected the same way the
+same day, showed the same behavior on its first two code-only pushes.
 
 ## B. Redirect www to the apex
 
