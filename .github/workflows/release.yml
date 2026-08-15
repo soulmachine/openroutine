@@ -1,9 +1,9 @@
 # Pushing a v* tag releases that version everywhere at once: crates.io, a
 # GitHub release with prebuilt binaries, and npm. The npm package downloads
 # from the GitHub release at install time, so npm publishes only after the
-# release exists. crates.io authenticates with the CARGO_REGISTRY_TOKEN
-# secret; npm uses OIDC trusted publishing (configured on npmjs.com for this
-# repo and workflow), so no npm token exists anywhere.
+# release exists. Both registries authenticate by OIDC trusted publishing —
+# configured on crates.io and npmjs.com for this repo and this workflow file —
+# so no registry token exists anywhere.
 name: release
 
 on:
@@ -32,12 +32,28 @@ jobs:
   crates:
     needs: test
     runs-on: ubuntu-22.04
+    permissions:
+      id-token: write # the OIDC exchange with crates.io; there is no token secret
+      contents: read
     steps:
       - uses: actions/checkout@v5
       - run: rustup update --no-self-update stable
-      - run: cargo publish --locked
+      # OIDC -> a 30-minute token, revoked when the job ends.
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: publish, unless this version is already up
+        # The skip makes a re-run after a partial release idempotent —
+        # cargo publish hard-fails on a version that already exists.
+        run: |
+          set -eu
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if curl -sf https://index.crates.io/op/en/openroutine | grep -q "\"vers\":\"$version\""; then
+            echo "openroutine $version is already on crates.io; skipping"
+          else
+            cargo publish --locked
+          fi
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
   build:
     needs: test
