@@ -5,28 +5,28 @@
 class Openroutine < Formula
   desc "Your AI agents' crontab, as markdown"
   homepage "https://openroutine.dev"
-  version "1.0.4"
+  version "1.0.5"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/soulmachine/openroutine/releases/download/v1.0.4/openroutine-v1.0.4-aarch64-apple-darwin.tar.gz"
-      sha256 "7fb6d0d0c8467747d63d28522b1a497dd7f38e4b11388120b1ed196e4fc1548f"
+      url "https://github.com/soulmachine/openroutine/releases/download/v1.0.5/openroutine-v1.0.5-aarch64-apple-darwin.tar.gz"
+      sha256 "694bdff13c415b09de4e7f39157768e485fbd0ae470b179a17717a6b9c2b7f8e"
     end
     on_intel do
-      url "https://github.com/soulmachine/openroutine/releases/download/v1.0.4/openroutine-v1.0.4-x86_64-apple-darwin.tar.gz"
-      sha256 "563fbcba273b6ac725c7323a55f147938421835aa6398879cbf264c193f4558f"
+      url "https://github.com/soulmachine/openroutine/releases/download/v1.0.5/openroutine-v1.0.5-x86_64-apple-darwin.tar.gz"
+      sha256 "31fcc38a6eeaf2b7f31a98e6ae359d85f28fdb4bd0dcbea3eb84ba789408c91a"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/soulmachine/openroutine/releases/download/v1.0.4/openroutine-v1.0.4-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "88ad3f5c90600222e519bc50c039559f43c5733b52a3010df6163b18cc9ee95c"
+      url "https://github.com/soulmachine/openroutine/releases/download/v1.0.5/openroutine-v1.0.5-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "9e732fe1654282d3aabb4f7e4954992dbadf19db10efdcddcf8b8a6b3f69df58"
     end
     on_intel do
-      url "https://github.com/soulmachine/openroutine/releases/download/v1.0.4/openroutine-v1.0.4-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "69bc43d3cb76e47156f44e3219fdfe8689a9394b2ec51fb8f5653fa231335a5f"
+      url "https://github.com/soulmachine/openroutine/releases/download/v1.0.5/openroutine-v1.0.5-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "927449e34f83a530f94fa177c39fd0ae2ea202686af770fa5cbda17932cca2d0"
     end
   end
 
