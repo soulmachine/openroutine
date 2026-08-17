@@ -36,5 +36,11 @@ class Openroutine < Formula
 
   test do
     assert_match "openroutine #{version}", shell_output("#{bin}/openroutine --version")
+    # --version alone passes on a binary whose config layer is broken, so walk
+    # the write-then-read path too. --config is global, and without it these
+    # would touch the real config.
+    system bin/"openroutine", "--config", testpath/"config.toml", "init"
+    assert_match "No tasks found",
+                 shell_output("#{bin}/openroutine --config #{testpath}/config.toml list")
   end
 end

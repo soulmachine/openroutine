@@ -5,10 +5,10 @@
 **OpenRoutine is the open-source alternative to [Claude Code Routines](https://code.claude.com/docs/en/routines) and [ChatGPT's scheduled tasks](https://learn.chatgpt.com/docs/automations?surface=app)** — the same unattended-agent idea, with the vendor locks removed. One markdown file per task, crontab syntax in the frontmatter, any AI coding agent underneath. Tasks live in your repo, run on your machine, and answer to no account, plan, or cap.
 
 **Website:** [openroutine.dev](https://openroutine.dev) — hand-written HTML under
-[`site/`](site/), no build step, in English and [简体中文](https://openroutine.dev/zh/).
+[`site/`](https://github.com/soulmachine/openroutine/tree/main/site/), no build step, in English and [简体中文](https://openroutine.dev/zh/).
 Cloudflare Workers Builds watches this repository, so a push to `main` that touches `site/`
 deploys it; one that touches only the Rust project does not trigger a build.
-[site/DEPLOY.md](site/DEPLOY.md) has the settings.
+[site/DEPLOY.md](https://github.com/soulmachine/openroutine/blob/main/site/DEPLOY.md) has the settings.
 
 ## A task is a file
 
@@ -220,7 +220,7 @@ it and leaves your config, state, and tasks untouched.
 
 **Implemented**: scheduler, runner, REST API, and web UI, in one binary.
 [.scratch/openroutine-v1/spec.md](.scratch/openroutine-v1/spec.md) is the full
-design; [CONTEXT.md](CONTEXT.md) is the glossary; [docs/adr/](docs/adr/)
+design; [CONTEXT.md](https://github.com/soulmachine/openroutine/blob/main/CONTEXT.md) is the glossary; [docs/adr/](https://github.com/soulmachine/openroutine/tree/main/docs/adr/)
 records the architectural decisions.
 
 **1.0 breaks with 0.2.** Tasks are registered one file at a time rather than

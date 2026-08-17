@@ -13,6 +13,9 @@ requires-python = ">=3.9"
 # Both are read from Cargo.toml, so the version lives in exactly one place.
 dynamic = ["version", "description"]
 keywords = ["cron", "scheduler", "agents", "automation", "ai"]
+# The missing "License :: OSI Approved :: MIT License" is deliberate: `license`
+# above emits a PEP 639 License-Expression, and PyPI rejects an upload that
+# carries both that and a license classifier.
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -28,6 +31,8 @@ Homepage = "https://openroutine.dev"
 Repository = "https://github.com/soulmachine/openroutine"
 
 [tool.maturin]
-# Mandatory, not decorative: the crate has both a lib and a bin target, so
-# maturin's auto-detection is ambiguous and refuses to guess.
+# Auto-detection would pick this today, but only because the lib target is a
+# plain `lib`: adding `crate-type = ["cdylib"]` or a pyo3 dependency would
+# silently flip it to cffi/pyo3 and ship a wheel with no CLI in it. Pinning the
+# binding model turns that into a build error instead of a surprise.
 bindings = "bin"

@@ -16,12 +16,31 @@ dir="${2:?usage: update-formula.sh VERSION TARBALL_DIR}"
 # sha256sum on Linux, shasum on macOS — this runs in CI and by hand.
 sha() {
   file="$dir/openroutine-v$version-$1.tar.gz"
+  [ -f "$file" ] || { echo "update-formula: no such tarball: $file" >&2; exit 1; }
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$file" | cut -d' ' -f1
+    sha256sum "$file"
   else
-    shasum -a 256 "$file" | cut -d' ' -f1
-  fi
+    shasum -a 256 "$file"
+  fi | cut -d' ' -f1
 }
+
+# Hash into variables first, and check them, rather than calling sha() inline
+# in the heredoc. Two things would otherwise conspire to write an empty digest
+# and call the release a success: `sha256sum missing | cut` exits 0 because the
+# pipeline takes cut's status, and an `exit 1` inside $( ) only kills the
+# subshell, so `cat` writes the formula anyway. A tap whose every install fails
+# a checksum check is worse than a red build.
+mac_arm="$(sha aarch64-apple-darwin)"
+mac_intel="$(sha x86_64-apple-darwin)"
+linux_arm="$(sha aarch64-unknown-linux-gnu)"
+linux_intel="$(sha x86_64-unknown-linux-gnu)"
+
+for digest in "$mac_arm" "$mac_intel" "$linux_arm" "$linux_intel"; do
+  case "$digest" in
+    *[!0-9a-f]*) echo "update-formula: not a sha256: '$digest'" >&2; exit 1 ;;
+  esac
+  [ ${#digest} -eq 64 ] || { echo "update-formula: not a sha256: '$digest'" >&2; exit 1; }
+done
 
 base="https://github.com/soulmachine/openroutine/releases/download/v$version"
 
@@ -39,22 +58,22 @@ class Openroutine < Formula
   on_macos do
     on_arm do
       url "$base/openroutine-v$version-aarch64-apple-darwin.tar.gz"
-      sha256 "$(sha aarch64-apple-darwin)"
+      sha256 "$mac_arm"
     end
     on_intel do
       url "$base/openroutine-v$version-x86_64-apple-darwin.tar.gz"
-      sha256 "$(sha x86_64-apple-darwin)"
+      sha256 "$mac_intel"
     end
   end
 
   on_linux do
     on_arm do
       url "$base/openroutine-v$version-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "$(sha aarch64-unknown-linux-gnu)"
+      sha256 "$linux_arm"
     end
     on_intel do
       url "$base/openroutine-v$version-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "$(sha x86_64-unknown-linux-gnu)"
+      sha256 "$linux_intel"
     end
   end
 
@@ -64,6 +83,12 @@ class Openroutine < Formula
 
   test do
     assert_match "openroutine #{version}", shell_output("#{bin}/openroutine --version")
+    # --version alone passes on a binary whose config layer is broken, so walk
+    # the write-then-read path too. --config is global, and without it these
+    # would touch the real config.
+    system bin/"openroutine", "--config", testpath/"config.toml", "init"
+    assert_match "No tasks found",
+                 shell_output("#{bin}/openroutine --config #{testpath}/config.toml list")
   end
 end
 EOF

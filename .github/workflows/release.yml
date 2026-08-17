@@ -81,24 +81,19 @@ jobs:
           name: tarball-${{ matrix.target }}
           path: "*.tar.gz"
       # The wheel packs the binary just built into its scripts dir, so pip
-      # installs the same bytes the tarball carries. maturin shells out to
-      # cargo with the same profile and target dir, so this is a cache hit —
-      # it repackages, it does not recompile.
-      - uses: astral-sh/setup-uv@v6
+      # installs the same bytes the tarball carries. maturin runs cargo with
+      # the same profile and target dir and adds no rustflags, so this is a
+      # cache hit — it repackages, it does not recompile. Don't turn on strip;
+      # that would fork the wheel's binary from the tarball's.
+      #
+      # --compatibility pypi makes maturin apply PyPI's own upload rules to the
+      # tag it picks, so a wheel PyPI would reject fails here instead of after
+      # crates.io and the GitHub release have gone out. pipx is preinstalled on
+      # every runner this matrix uses.
       - run: >
-          uvx maturin@1.14.1 build --release --locked
-          --target ${{ matrix.target }} --out dist
-      - name: the wheel carries a PyPI-acceptable platform tag
-        # A bare linux_* tag is rejected at upload. Catch it here, before
-        # crates.io and the GitHub release have already gone out.
-        run: |
-          set -eu
-          ls dist/*.whl
-          for w in dist/*.whl; do
-            case "$w" in
-              *-linux_*.whl) echo "$w is not manylinux; PyPI will reject it"; exit 1 ;;
-            esac
-          done
+          pipx run maturin==1.14.1 build --release --locked
+          --target ${{ matrix.target }} --compatibility pypi --out dist
+      - run: ls -l dist
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.target }}
@@ -187,12 +182,16 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: main
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: tarball-*
-          merge-multiple: true
-      - run: .github/scripts/update-formula.sh "${GITHUB_REF_NAME#v}" artifacts
+          fetch-depth: 0 # a shallow clone cannot rebase on the race path below
+      # Hash what the formula's URLs actually serve, not the build artifacts we
+      # believe match them. It also proves all four assets are live before the
+      # tap starts advertising them.
+      - name: fetch the tarballs the formula will point at
+        run: >
+          gh release download "$GITHUB_REF_NAME" --dir tarballs --pattern '*.tar.gz'
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: .github/scripts/update-formula.sh "${GITHUB_REF_NAME#v}" tarballs
       - name: commit, unless the formula is already current
         run: |
           set -eu
