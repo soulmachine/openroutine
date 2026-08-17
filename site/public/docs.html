@@ -65,12 +65,19 @@
     <div class="wrap">
       <h2>Install</h2>
       <p class="section-note">
-        Requires a Rust toolchain; macOS and Linux only. Windows is an explicit non-goal.
+        macOS and Linux only; Windows is an explicit non-goal. Homebrew, PyPI, and npm all drop in
+        the same prebuilt binary — only the cargo routes need a Rust toolchain.
       </p>
-      <pre><code>git clone https://github.com/soulmachine/openroutine
-cd openroutine
-cargo install --path .       <span class="c"># or: cargo build --release</span>
-openroutine init             <span class="c"># writes a config, prints a sample task</span>
+      <pre><code>brew tap soulmachine/tap https://github.com/soulmachine/openroutine
+brew install openroutine     <span class="c"># prebuilt binary, no Rust needed</span>
+pip install openroutine      <span class="c"># or from PyPI — the binary, in a wheel</span>
+npm install -g openroutine   <span class="c"># or from npm</span>
+cargo install openroutine    <span class="c"># or build from crates.io</span></code></pre>
+      <p>
+        The <code>brew tap</code> line carries a URL because this repo is its own tap rather than a
+        separate <code>homebrew-*</code> one.
+      </p>
+      <pre><code>openroutine init             <span class="c"># writes a config, prints a sample task</span>
 openroutine add hello.md     <span class="c"># register a task file</span>
 openroutine list             <span class="c"># see what would run</span>
 openroutine serve            <span class="c"># run the scheduler in the foreground</span>

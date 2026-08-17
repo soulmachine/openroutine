@@ -8,7 +8,9 @@ repo, run on your machine, and answer to no account, plan, or cap.
 
 This package installs a prebuilt binary (macOS and Linux, x64 and arm64),
 fetched from the matching [GitHub release](https://github.com/soulmachine/openroutine/releases)
-at install time. Prefer building from source? `cargo install openroutine`.
+at install time. The same binary ships through Homebrew and PyPI —
+`brew install openroutine` after tapping this repo, or `pip install openroutine`
+— and `cargo install openroutine` builds it from source.
 
 ```bash
 npm install -g openroutine

@@ -43,14 +43,23 @@ The trade is honest in every direction: Routines gives you cloud execution, GitH
 
 ## Install
 
-macOS and Linux only (Windows is an explicit non-goal). The npm package
-installs a prebuilt binary; the cargo routes build from source and need a
-Rust toolchain.
+macOS and Linux only (Windows is an explicit non-goal). Homebrew, PyPI, and npm
+all drop in the same prebuilt binary; the cargo routes build from source and
+need a Rust toolchain.
 
 ```bash
-npm install -g openroutine      # prebuilt binary, no Rust needed
+brew tap soulmachine/tap https://github.com/soulmachine/openroutine
+brew install openroutine        # prebuilt binary, no Rust needed
+pip install openroutine         # or from PyPI — the binary, in a wheel
+npm install -g openroutine      # or from npm
 cargo install openroutine       # or build from crates.io
 cargo install --path .          # or build from a checkout
+```
+
+The `brew tap` line carries a URL because this repo is its own tap rather than
+a separate `homebrew-*` one. Once installed:
+
+```bash
 openroutine init                # writes a config and prints a sample task
 openroutine add my-task.md      # register a task file you wrote
 openroutine list                # see what would run

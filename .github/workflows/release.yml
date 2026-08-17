@@ -1,9 +1,11 @@
 # Pushing a v* tag releases that version everywhere at once: crates.io, a
-# GitHub release with prebuilt binaries, and npm. The npm package downloads
-# from the GitHub release at install time, so npm publishes only after the
-# release exists. Both registries authenticate by OIDC trusted publishing —
-# configured on crates.io and npmjs.com for this repo and this workflow file —
-# so no registry token exists anywhere.
+# GitHub release with prebuilt binaries, PyPI, npm, and the Homebrew formula
+# this repo serves as a tap. The npm package downloads from the GitHub release
+# at install time, so npm publishes only after the release exists; the wheels
+# bundle the binary, so PyPI does not have to wait. All three registries
+# authenticate by OIDC trusted publishing — configured on crates.io, PyPI, and
+# npmjs.com for this repo and this workflow file — so no registry token exists
+# anywhere, and the formula bump uses the built-in GITHUB_TOKEN.
 name: release
 
 on:
@@ -76,8 +78,31 @@ jobs:
           -C target/${{ matrix.target }}/release openroutine
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: tarball-${{ matrix.target }}
           path: "*.tar.gz"
+      # The wheel packs the binary just built into its scripts dir, so pip
+      # installs the same bytes the tarball carries. maturin shells out to
+      # cargo with the same profile and target dir, so this is a cache hit —
+      # it repackages, it does not recompile.
+      - uses: astral-sh/setup-uv@v6
+      - run: >
+          uvx maturin@1.14.1 build --release --locked
+          --target ${{ matrix.target }} --out dist
+      - name: the wheel carries a PyPI-acceptable platform tag
+        # A bare linux_* tag is rejected at upload. Catch it here, before
+        # crates.io and the GitHub release have already gone out.
+        run: |
+          set -eu
+          ls dist/*.whl
+          for w in dist/*.whl; do
+            case "$w" in
+              *-linux_*.whl) echo "$w is not manylinux; PyPI will reject it"; exit 1 ;;
+            esac
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
 
   release:
     needs: build
@@ -89,12 +114,34 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: tarball-*
           merge-multiple: true
       - run: >
           gh release create "$GITHUB_REF_NAME" artifacts/*.tar.gz
           --title "$GITHUB_REF_NAME" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # Unlike npm, the wheels bundle the binary, so this needs the build and not
+  # the release.
+  pypi:
+    needs: build
+    runs-on: ubuntu-22.04
+    environment: pypi
+    permissions:
+      id-token: write # the OIDC exchange with PyPI; there is no token secret
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: wheel-*
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # The same idempotency the crates.io and npm jobs get from their
+          # existence probes: a re-run after a partial release is safe.
+          skip-existing: true
 
   npm:
     needs: release
@@ -126,3 +173,40 @@ jobs:
           else
             npm publish ./npm
           fi
+
+  # This repo doubles as its own Homebrew tap, so the formula is bumped in
+  # place once the release its URLs point at exists.
+  formula:
+    needs: release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      # The workflow runs on a tag, so check out the branch we mean to commit
+      # to rather than the detached HEAD the tag would give us.
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: tarball-*
+          merge-multiple: true
+      - run: .github/scripts/update-formula.sh "${GITHUB_REF_NAME#v}" artifacts
+      - name: commit, unless the formula is already current
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/openroutine.rb
+          if git diff --cached --quiet; then
+            echo "Formula/openroutine.rb is already current; skipping"
+            exit 0
+          fi
+          git commit -m "brew: openroutine ${GITHUB_REF_NAME#v}"
+          # main may have moved while the release was building.
+          for _ in 1 2 3; do
+            if git push origin HEAD:main; then exit 0; fi
+            git pull --rebase origin main
+          done
+          exit 1

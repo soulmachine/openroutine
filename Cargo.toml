@@ -8,7 +8,7 @@ repository = "https://github.com/soulmachine/openroutine"
 homepage = "https://openroutine.dev"
 keywords = ["cron", "scheduler", "agents", "automation", "ai"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["site/", "skills/", "docs/", ".scratch/", ".github/", "npm/", "DECISIONS.md", "CONTEXT.md"]
+exclude = ["site/", "skills/", "docs/", ".scratch/", ".github/", "npm/", "Formula/", "DECISIONS.md", "CONTEXT.md"]
 
 [dependencies]
 anyhow = "1.0.104"

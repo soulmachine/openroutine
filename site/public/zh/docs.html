@@ -65,12 +65,19 @@
     <div class="wrap">
       <h2>安装</h2>
       <p class="section-note">
-        需要 Rust 工具链；仅支持 macOS 和 Linux。明确不支持 Windows。
+        仅支持 macOS 和 Linux，明确不支持 Windows。Homebrew、PyPI、npm 装的都是同一个
+        预编译二进制文件——只有 cargo 这两条路需要 Rust 工具链。
       </p>
-      <pre><code>git clone https://github.com/soulmachine/openroutine
-cd openroutine
-cargo install --path .       <span class="c"># 或：cargo build --release</span>
-openroutine init             <span class="c"># 写入配置，打印一个示例任务</span>
+      <pre><code>brew tap soulmachine/tap https://github.com/soulmachine/openroutine
+brew install openroutine     <span class="c"># 预编译二进制，不需要 Rust</span>
+pip install openroutine      <span class="c"># 或从 PyPI 安装——同一个二进制，打包成 wheel</span>
+npm install -g openroutine   <span class="c"># 或从 npm 安装</span>
+cargo install openroutine    <span class="c"># 或从 crates.io 源码编译</span></code></pre>
+      <p>
+        <code>brew tap</code> 这行要带上仓库地址，因为这个仓库本身就是 tap，而不是另建一个
+        <code>homebrew-*</code> 仓库。
+      </p>
+      <pre><code>openroutine init             <span class="c"># 写入配置，打印一个示例任务</span>
 openroutine add hello.md     <span class="c"># 注册一个任务文件</span>
 openroutine list             <span class="c"># 查看哪些任务会运行</span>
 openroutine serve            <span class="c"># 在前台运行调度器</span>
