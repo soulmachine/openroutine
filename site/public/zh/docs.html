@@ -69,13 +69,14 @@
         预编译二进制文件——只有 cargo 这两条路需要 Rust 工具链。
       </p>
       <pre><code>brew tap soulmachine/tap https://github.com/soulmachine/openroutine
+brew trust --formula soulmachine/tap/openroutine
 brew install openroutine     <span class="c"># 预编译二进制，不需要 Rust</span>
 pip install openroutine      <span class="c"># 或从 PyPI 安装——同一个二进制，打包成 wheel</span>
 npm install -g openroutine   <span class="c"># 或从 npm 安装</span>
 cargo install openroutine    <span class="c"># 或从 crates.io 源码编译</span></code></pre>
       <p>
         <code>brew tap</code> 这行要带上仓库地址，因为这个仓库本身就是 tap，而不是另建一个
-        <code>homebrew-*</code> 仓库。
+        <code>homebrew-*</code> 仓库；Homebrew 6 还要求先信任第三方 formula 才会加载它。
       </p>
       <pre><code>openroutine init             <span class="c"># 写入配置，打印一个示例任务</span>
 openroutine add hello.md     <span class="c"># 注册一个任务文件</span>

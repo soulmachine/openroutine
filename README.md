@@ -49,6 +49,7 @@ need a Rust toolchain.
 
 ```bash
 brew tap soulmachine/tap https://github.com/soulmachine/openroutine
+brew trust --formula soulmachine/tap/openroutine
 brew install openroutine        # prebuilt binary, no Rust needed
 pip install openroutine         # or from PyPI — the binary, in a wheel
 npm install -g openroutine      # or from npm
@@ -57,7 +58,8 @@ cargo install --path .          # or build from a checkout
 ```
 
 The `brew tap` line carries a URL because this repo is its own tap rather than
-a separate `homebrew-*` one. Once installed:
+a separate `homebrew-*` one, and Homebrew 6 wants a third-party formula trusted
+before it will load it. Once installed:
 
 ```bash
 openroutine init                # writes a config and prints a sample task

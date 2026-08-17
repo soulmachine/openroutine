@@ -69,13 +69,15 @@
         the same prebuilt binary — only the cargo routes need a Rust toolchain.
       </p>
       <pre><code>brew tap soulmachine/tap https://github.com/soulmachine/openroutine
+brew trust --formula soulmachine/tap/openroutine
 brew install openroutine     <span class="c"># prebuilt binary, no Rust needed</span>
 pip install openroutine      <span class="c"># or from PyPI — the binary, in a wheel</span>
 npm install -g openroutine   <span class="c"># or from npm</span>
 cargo install openroutine    <span class="c"># or build from crates.io</span></code></pre>
       <p>
         The <code>brew tap</code> line carries a URL because this repo is its own tap rather than a
-        separate <code>homebrew-*</code> one.
+        separate <code>homebrew-*</code> one, and Homebrew 6 wants a third-party formula trusted
+        before it will load it.
       </p>
       <pre><code>openroutine init             <span class="c"># writes a config, prints a sample task</span>
 openroutine add hello.md     <span class="c"># register a task file</span>
