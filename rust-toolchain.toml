@@ -1,0 +1,6 @@
+# Build with the stable channel — whatever `rustup update stable` has made current —
+# so a machine whose default toolchain is something else still builds this repo the
+# way the release workflow does (it runs `rustup update stable` before every job).
+# Not packaged: Cargo.toml's `exclude` keeps it out of the published crate.
+[toolchain]
+channel = "stable"
