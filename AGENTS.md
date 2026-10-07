@@ -79,11 +79,21 @@ description: Trigger the Messages consent dialog through openroutine
 agent: osascript
 ---
 
-tell application "Messages" to get name
+with timeout of 20 seconds
+	tell application "Messages" to return (count of chats) as text
+end timeout
 ```
 
-`openroutine add tcc-probe.md && openroutine run tcc-probe` fires it. Exit 0 with `Messages` in
-the log means the grant holds; a dialog means it did not, so have the user approve it. Then
+The probe has to ask Messages for something only Messages knows, such as `count of chats`.
+`get name` looks like a probe but proves nothing: osascript answers an application's name
+itself, without sending an Apple Event, so it passes with no grant at all. On 2026-10-07 a
+`get name` health check passed for two days while every send timed out.
+
+`openroutine add tcc-probe.md && openroutine run tcc-probe` fires it. Exit 0 with the chat
+count in the log means the grant holds. If the grant is missing, macOS shows the consent
+dialog on the Mac's screen for as long as the event waits, and the Run fails with `AppleEvent
+timed out (-1712)` if nobody answers. Have the user click Allow while it waits, raising the
+timeout if they need longer, and fire it again to confirm. Then
 `openroutine remove tcc-probe` and drop the agent block. Firing the real task is a poor
 substitute: it costs an agent run, sends a real message, and — as happened on 2026-08-12 — an
 empty hour never reaches its messaging step at all, leaving the grant untested.
